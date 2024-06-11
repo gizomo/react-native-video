@@ -56,8 +56,9 @@ export type VideoSaveData = {
 
 export interface VideoRef {
   seek: (time: number, tolerance?: number) => void;
-  resume: () => void;
-  pause: () => void;
+  resume: () => Promise<void>;
+  pause: () => Promise<void>;
+  isPaused: () => Promise<boolean>;
   presentFullscreenPlayer: () => void;
   dismissFullscreenPlayer: () => void;
   restoreUserInterfaceForPictureInPictureStopCompleted: (
@@ -66,7 +67,6 @@ export interface VideoRef {
   save: (options: object) => Promise<VideoSaveData>;
   setVolume: (volume: number) => void;
   getCurrentPosition: () => Promise<number>;
-  setFullScreen: (fullScreen: boolean) => void;
 }
 
 const Video = forwardRef<VideoRef, ReactVideoProps>(
@@ -286,6 +286,10 @@ const Video = forwardRef<VideoRef, ReactVideoProps>(
       return VideoManager.setPlayerPauseState(false, getReactTag(nativeRef));
     }, []);
 
+    const isPaused = useCallback(() => {
+      return VideoManager.isPlayerPaused(getReactTag(nativeRef));
+    }, []);
+
     const restoreUserInterfaceForPictureInPictureStopCompleted = useCallback(
       (restored: boolean) => {
         setRestoreUserInterfaceForPIPStopCompletionHandler(restored);
@@ -299,10 +303,6 @@ const Video = forwardRef<VideoRef, ReactVideoProps>(
 
     const getCurrentPosition = useCallback(() => {
       return VideoManager.getCurrentPosition(getReactTag(nativeRef));
-    }, []);
-
-    const setFullScreen = useCallback((fullScreen: boolean) => {
-      return VideoManager.setFullScreen(fullScreen, getReactTag(nativeRef));
     }, []);
 
     const onVideoLoadStart = useCallback(
@@ -477,27 +477,27 @@ const Video = forwardRef<VideoRef, ReactVideoProps>(
               .then((result) => {
                 if (result !== undefined) {
                   nativeRef.current &&
-                    VideoManager.setLicenseResult(
-                      result,
-                      data.loadedLicenseUrl,
-                      getReactTag(nativeRef),
-                    );
+                  VideoManager.setLicenseResult(
+                    result,
+                    data.loadedLicenseUrl,
+                    getReactTag(nativeRef),
+                  );
                 } else {
                   nativeRef.current &&
-                    VideoManager.setLicenseResultError(
-                      'Empty license result',
-                      data.loadedLicenseUrl,
-                      getReactTag(nativeRef),
-                    );
+                  VideoManager.setLicenseResultError(
+                    'Empty license result',
+                    data.loadedLicenseUrl,
+                    getReactTag(nativeRef),
+                  );
                 }
               })
               .catch(() => {
                 nativeRef.current &&
-                  VideoManager.setLicenseResultError(
-                    'fetch error',
-                    data.loadedLicenseUrl,
-                    getReactTag(nativeRef),
-                  );
+                VideoManager.setLicenseResultError(
+                  'fetch error',
+                  data.loadedLicenseUrl,
+                  getReactTag(nativeRef),
+                );
               });
           } else {
             VideoManager.setLicenseResultError(
@@ -520,10 +520,10 @@ const Video = forwardRef<VideoRef, ReactVideoProps>(
         save,
         pause,
         resume,
+        isPaused,
         restoreUserInterfaceForPictureInPictureStopCompleted,
         setVolume,
         getCurrentPosition,
-        setFullScreen,
       }),
       [
         seek,
@@ -532,10 +532,10 @@ const Video = forwardRef<VideoRef, ReactVideoProps>(
         save,
         pause,
         resume,
+        isPaused,
         restoreUserInterfaceForPictureInPictureStopCompleted,
         setVolume,
         getCurrentPosition,
-        setFullScreen,
       ],
     );
 

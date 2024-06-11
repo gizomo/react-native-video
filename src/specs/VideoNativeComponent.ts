@@ -379,6 +379,7 @@ export interface VideoManagerType {
   save: (option: object, reactTag: number) => Promise<VideoSaveData>;
   seek: (option: Seek, reactTag: number) => Promise<void>;
   setPlayerPauseState: (paused: boolean, reactTag: number) => Promise<void>;
+  isPlayerPaused: (reactTag: number) => Promise<boolean>;
   setLicenseResult: (
     result: string,
     licenseUrl: string,
@@ -391,7 +392,6 @@ export interface VideoManagerType {
   ) => Promise<void>;
   setVolume: (volume: number, reactTag: number) => Promise<void>;
   getCurrentPosition: (reactTag: number) => Promise<number>;
-  setFullScreen: (fullScreen: boolean, reactTag: number) => Promise<void>;
 }
 
 export interface VideoDecoderPropertiesType {

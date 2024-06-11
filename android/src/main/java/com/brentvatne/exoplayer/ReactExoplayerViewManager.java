@@ -12,7 +12,6 @@ import androidx.media3.common.util.Util;
 import com.brentvatne.common.api.BufferConfig;
 import com.brentvatne.common.api.BufferingStrategy;
 import com.brentvatne.common.api.ControlsConfig;
-import com.brentvatne.common.api.DRMProps;
 import com.brentvatne.common.api.ResizeMode;
 import com.brentvatne.common.api.SideLoadedTextTrackList;
 import com.brentvatne.common.api.Source;
@@ -40,7 +39,9 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
     private static final String PROP_SRC = "src";
     private static final String PROP_AD_TAG_URL = "adTagUrl";
     private static final String PROP_DRM = "drm";
-    private static final String PROP_SRC_HEADERS = "requestHeaders";
+    private static final String PROP_DRM_TYPE = "type";
+    private static final String PROP_DRM_LICENSE_SERVER = "licenseServer";
+    private static final String PROP_DRM_HEADERS = "headers";
     private static final String PROP_RESIZE_MODE = "resizeMode";
     private static final String PROP_REPEAT = "repeat";
     private static final String PROP_SELECTED_AUDIO_TRACK = "selectedAudioTrack";
@@ -61,6 +62,8 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
     private static final String PROP_RATE = "rate";
     private static final String PROP_MIN_LOAD_RETRY_COUNT = "minLoadRetryCount";
     private static final String PROP_MAXIMUM_BIT_RATE = "maxBitRate";
+    private static final String PROP_LOW_INIT_BIT_RATE = "lowInitBitRate";
+    private static final String PROP_PREFER_SOFT_CODECS = "preferSoftCodecs";
     private static final String PROP_PLAY_IN_BACKGROUND = "playInBackground";
     private static final String PROP_CONTENT_START_TIME = "contentStartTime";
     private static final String PROP_DISABLE_FOCUS = "disableFocus";
@@ -116,9 +119,28 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
 
     @ReactProp(name = PROP_DRM)
     public void setDRM(final ReactExoplayerView videoView, @Nullable ReadableMap drm) {
-        DRMProps drmProps = DRMProps.parse(drm);
-        videoView.setDrm(drmProps);
-        videoView.setUseTextureView(false);
+        if (drm != null && drm.hasKey(PROP_DRM_TYPE)) {
+            String drmType = ReactBridgeUtils.safeGetString(drm, PROP_DRM_TYPE);
+            String drmLicenseServer = ReactBridgeUtils.safeGetString(drm, PROP_DRM_LICENSE_SERVER);
+            ReadableArray drmHeadersArray = ReactBridgeUtils.safeGetArray(drm, PROP_DRM_HEADERS);
+            if (drmType != null && drmLicenseServer != null && Util.getDrmUuid(drmType) != null) {
+                UUID drmUUID = Util.getDrmUuid(drmType);
+                videoView.setDrmType(drmUUID);
+                videoView.setDrmLicenseUrl(drmLicenseServer);
+                if (drmHeadersArray != null) {
+                    ArrayList<String> drmKeyRequestPropertiesList = new ArrayList<>();
+                    for (int i = 0; i < drmHeadersArray.size(); i++) {
+                        ReadableMap current = drmHeadersArray.getMap(i);
+                        String key = current.hasKey("key") ? current.getString("key") : null;
+                        String value = current.hasKey("value") ? current.getString("value") : null;
+                        drmKeyRequestPropertiesList.add(key);
+                        drmKeyRequestPropertiesList.add(value);
+                    }
+                    videoView.setDrmLicenseHeader(drmKeyRequestPropertiesList.toArray(new String[0]));
+                }
+                videoView.setUseTextureView(false);
+            }
+        }
     }
 
     @ReactProp(name = PROP_SRC)
@@ -176,7 +198,7 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
 
     @ReactProp(name = PROP_SELECTED_VIDEO_TRACK)
     public void setSelectedVideoTrack(final ReactExoplayerView videoView,
-                                     @Nullable ReadableMap selectedVideoTrack) {
+                                      @Nullable ReadableMap selectedVideoTrack) {
         String typeString = null;
         String value = null;
         if (selectedVideoTrack != null) {
@@ -188,7 +210,7 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
 
     @ReactProp(name = PROP_SELECTED_AUDIO_TRACK)
     public void setSelectedAudioTrack(final ReactExoplayerView videoView,
-                                     @Nullable ReadableMap selectedAudioTrack) {
+                                      @Nullable ReadableMap selectedAudioTrack) {
         String typeString = null;
         String value = null;
         if (selectedAudioTrack != null) {
@@ -255,6 +277,16 @@ public class ReactExoplayerViewManager extends ViewGroupManager<ReactExoplayerVi
     @ReactProp(name = PROP_MAXIMUM_BIT_RATE)
     public void setMaxBitRate(final ReactExoplayerView videoView, final int maxBitRate) {
         videoView.setMaxBitRateModifier(maxBitRate);
+    }
+
+    @ReactProp(name = PROP_LOW_INIT_BIT_RATE, defaultBoolean = false)
+    public void setInitBitRate(final ReactExoplayerView videoView, final boolean lowInitBitRate) {
+        videoView.setInitialBitrateEstimate(lowInitBitRate);
+    }
+
+    @ReactProp(name = PROP_PREFER_SOFT_CODECS, defaultBoolean = false)
+    public void setPreferSoftCodecs(final ReactExoplayerView videoView, final boolean preferSoftCodecs) {
+        videoView.setCodecsPriority(preferSoftCodecs);
     }
 
     @ReactProp(name = PROP_MIN_LOAD_RETRY_COUNT)

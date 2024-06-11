@@ -110,7 +110,6 @@ import androidx.media3.ui.LegacyPlayerControlView;
 import com.brentvatne.common.api.BufferConfig;
 import com.brentvatne.common.api.BufferingStrategy;
 import com.brentvatne.common.api.ControlsConfig;
-import com.brentvatne.common.api.DRMProps;
 import com.brentvatne.common.api.ResizeMode;
 import com.brentvatne.common.api.SideLoadedTextTrack;
 import com.brentvatne.common.api.SideLoadedTextTrackList;
@@ -174,7 +173,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
     private final VideoEventEmitter eventEmitter;
     private final ReactExoplayerConfig config;
-    private final DefaultBandwidthMeter bandwidthMeter;
+    private DefaultBandwidthMeter bandwidthMeter;
     private LegacyPlayerControlView playerControlView;
     private View playPauseControlContainer;
     private Player.Listener eventListener;
@@ -212,6 +211,8 @@ public class ReactExoplayerView extends FrameLayout implements
     private int minLoadRetryCount = 3;
     private BufferConfig bufferConfig = new BufferConfig();
     private int maxBitRate = 0;
+    private boolean lowInitBitrateEnabled = false;
+    private int codecPriority = DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON;
     private boolean hasDrmFailed = false;
     private boolean isUsingContentResolution = false;
     private boolean selectTrackWhenReady = false;
@@ -239,7 +240,9 @@ public class ReactExoplayerView extends FrameLayout implements
     private float mProgressUpdateInterval = 250.0f;
     private boolean playInBackground = false;
     private boolean mReportBandwidth = false;
-    private DRMProps drmProps;
+    private UUID drmUUID = null;
+    private String drmLicenseUrl = null;
+    private String[] drmLicenseHeader = null;
     private boolean controls;
     private Uri adTagUrl;
 
@@ -461,13 +464,13 @@ public class ReactExoplayerView extends FrameLayout implements
         //Handling the pauseButton click event
         ImageButton pauseButton = playerControlView.findViewById(R.id.exo_pause);
         pauseButton.setOnClickListener((View v) ->
-            setPausedModifier(true)
+                setPausedModifier(true)
         );
 
         //Handling the fullScreenButton click event
         final ImageButton fullScreenButton = playerControlView.findViewById(R.id.exo_fullscreen);
         fullScreenButton.setOnClickListener(v -> setFullscreen(!isFullscreen));
-        updateFullScreenButtonVisibility();
+        updateFullScreenButtonVisbility();
         refreshProgressBarVisibility();
 
         // Invoking onPlaybackStateChanged and onPlayWhenReadyChanged events for Player
@@ -725,7 +728,7 @@ public class ReactExoplayerView extends FrameLayout implements
         );
         DefaultRenderersFactory renderersFactory =
                 new DefaultRenderersFactory(getContext())
-                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+                        .setExtensionRendererMode(codecPriority)
                         .setEnableDecoderFallback(true)
                         .forceEnableMediaCodecAsynchronousQueueing();
 
@@ -773,11 +776,10 @@ public class ReactExoplayerView extends FrameLayout implements
 
     private DrmSessionManager initializePlayerDrm(ReactExoplayerView self) {
         DrmSessionManager drmSessionManager = null;
-        if (self.drmProps != null) {
+        if (self.drmUUID != null) {
             try {
-                drmSessionManager = self.buildDrmSessionManager(self.drmProps.getDrmUUID(),
-                        self.drmProps.getDrmLicenseServer(),
-                        self.drmProps.getDrmLicenseHeader());
+                drmSessionManager = self.buildDrmSessionManager(self.drmUUID, self.drmLicenseUrl,
+                        self.drmLicenseHeader);
             } catch (UnsupportedDrmException e) {
                 int errorStringId = Util.SDK_INT < 18 ? R.string.error_drm_not_supported
                         : (e.reason == UnsupportedDrmException.REASON_UNSUPPORTED_SCHEME
@@ -794,7 +796,7 @@ public class ReactExoplayerView extends FrameLayout implements
             return;
         }
         DrmSessionManager drmSessionManager = initializePlayerDrm(this);
-        if (drmSessionManager == null && drmProps != null && drmProps.getDrmUUID() != null) {
+        if (drmSessionManager == null && drmUUID != null) {
             // Failed to intialize DRM session manager - cannot continue
             DebugLog.e(TAG, "Failed to initialize DRM Session Manager Framework!");
             eventEmitter.error("Failed to initialize DRM Session Manager Framework!", new Exception("DRM Session Manager Framework failure!"), "3003");
@@ -1197,14 +1199,14 @@ public class ReactExoplayerView extends FrameLayout implements
                     // Lower the volume
                     if (!view.muted) {
                         activity.runOnUiThread(() ->
-                            view.player.setVolume(view.audioVolume * 0.8f)
+                                view.player.setVolume(view.audioVolume * 0.8f)
                         );
                     }
                 } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
                     // Raise it back to normal
                     if (!view.muted) {
                         activity.runOnUiThread(() ->
-                            view.player.setVolume(view.audioVolume * 1)
+                                view.player.setVolume(view.audioVolume * 1)
                         );
                     }
                 }
@@ -1429,8 +1431,7 @@ public class ReactExoplayerView extends FrameLayout implements
         }
     }
 
-    private static boolean isTrackSelected(TrackSelection selection, TrackGroup group,
-                                           int trackIndex){
+    private static boolean isTrackSelected(TrackSelection selection, TrackGroup group, int trackIndex){
         return selection != null && selection.getTrackGroup() == group
                 && selection.indexOf( trackIndex ) != C.INDEX_UNSET;
     }
@@ -1453,10 +1454,21 @@ public class ReactExoplayerView extends FrameLayout implements
 
         for (int i = 0; i < groups.length; ++i) {
             TrackGroup group = groups.get(i);
-            Format format = group.getFormat(0);
-            Track audioTrack = exoplayerTrackToGenericTrack(format, i, selection, group);
-            audioTrack.setBitrate(format.bitrate == Format.NO_VALUE ? 0 : format.bitrate);
-            audioTracks.add(audioTrack);
+            int supportedTrackIndex = Format.NO_VALUE;
+
+            for (int trackIndex = 0; trackIndex < group.length; trackIndex++) {
+                Format format = group.getFormat(trackIndex);
+                if (isFormatSupported(format, C.TRACK_TYPE_AUDIO)) {
+                    supportedTrackIndex = trackIndex;
+                }
+            }
+
+            if (supportedTrackIndex != Format.NO_VALUE) {
+                Format format = group.getFormat(supportedTrackIndex);
+                Track audioTrack = exoplayerTrackToGenericTrack(format, i, selection, group);
+                audioTrack.setBitrate(format.bitrate == Format.NO_VALUE ? 0 : format.bitrate);
+                audioTracks.add(audioTrack);
+            }
         }
         return audioTracks;
     }
@@ -1491,7 +1503,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
             for (int trackIndex = 0; trackIndex < group.length; trackIndex++) {
                 Format format = group.getFormat(trackIndex);
-                if (isFormatSupported(format)) {
+                if (isFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
                     VideoTrack videoTrack = exoplayerVideoTrackToGenericVideoTrack(format, trackIndex);
                     videoTracks.add(videoTrack);
                 }
@@ -1533,7 +1545,7 @@ public class ReactExoplayerView extends FrameLayout implements
                             for (int representationIndex = 0; representationIndex < adaptation.representations.size(); representationIndex++) {
                                 Representation representation = adaptation.representations.get(representationIndex);
                                 Format format = representation.format;
-                                if (isFormatSupported(format)) {
+                                if (isFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
                                     if (representation.presentationTimeOffsetUs <= startTimeUs) {
                                         break;
                                     }
@@ -1763,6 +1775,10 @@ public class ReactExoplayerView extends FrameLayout implements
                     DataSourceUtil.getDefaultDataSourceFactory(this.themedReactContext, bandwidthMeter,
                             source.getHeaders());
 
+            if (lowInitBitrateEnabled) {
+                this.setInitialBitrateEstimate(true);
+            }
+
             if (!isSourceEqual) {
                 reloadSource();
             }
@@ -1863,7 +1879,19 @@ public class ReactExoplayerView extends FrameLayout implements
                 Format format = groups.get(i).getFormat(0);
                 if (format.language != null && format.language.equals(value)) {
                     groupIndex = i;
-                    break;
+
+                    if (trackType == C.TRACK_TYPE_AUDIO) {
+                        List<Integer> indices = getSupportedTracksIndices(C.TRACK_TYPE_AUDIO, groups.get(groupIndex));
+
+                        if (indices.isEmpty()) {
+                            groupIndex = C.INDEX_UNSET;
+                        } else {
+                            tracks = indices;
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
             }
         } else if ("title".equals(type)) {
@@ -1884,24 +1912,38 @@ public class ReactExoplayerView extends FrameLayout implements
                 }
             } else if (iValue < groups.length) {
                 groupIndex = iValue;
+
+                if (trackType == C.TRACK_TYPE_AUDIO) {
+                    List<Integer> indices = getSupportedTracksIndices(C.TRACK_TYPE_AUDIO, groups.get(groupIndex));
+
+                    if (indices.isEmpty()) {
+                        groupIndex = C.INDEX_UNSET;
+                    } else {
+                        tracks = indices;
+                    }
+                }
             }
         } else if ("resolution".equals(type)) {
             int height = Integer.parseInt(value);
+
             for (int i = 0; i < groups.length; ++i) { // Search for the exact height
                 TrackGroup group = groups.get(i);
                 Format closestFormat = null;
-                int closestTrackIndex = -1;
-                boolean usingExactMatch = false;
+                int closestTrackIndex = C.INDEX_UNSET;
+                List<Integer> indices = new ArrayList<>();
+
                 for (int j = 0; j < group.length; j++) {
                     Format format = group.getFormat(j);
+
+                    if (!isFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
+                        continue;
+                    }
+
                     if (format.height == height) {
-                        groupIndex = i;
-                        tracks.set(0, j);
+                        indices.add(j);
                         closestFormat = null;
-                        closestTrackIndex = -1;
-                        usingExactMatch = true;
-                        break;
-                    } else if (isUsingContentResolution) {
+                        closestTrackIndex = C.INDEX_UNSET;
+                    } else if (indices.isEmpty()) {
                         // When using content resolution rather than ads, we need to try and find the closest match if there is no exact match
                         if (closestFormat != null) {
                             if ((format.bitrate > closestFormat.bitrate || format.height > closestFormat.height) && format.height < height) {
@@ -1915,65 +1957,64 @@ public class ReactExoplayerView extends FrameLayout implements
                         }
                     }
                 }
-                // This is a fallback if the new period contains only higher resolutions than the user has selected
-                if (closestFormat == null && isUsingContentResolution && !usingExactMatch) {
+
+                groupIndex = i;
+
+                if (!indices.isEmpty()) { // We fond al least one exact match
+                    tracks = indices;
+                    break;
+                }
+
+                // Selecting the closest match found
+                if (C.INDEX_UNSET != closestTrackIndex) {
+                    tracks.set(0, closestTrackIndex);
+                } else {
                     // No close match found - so we pick the lowest quality
                     int minHeight = Integer.MAX_VALUE;
+
                     for (int j = 0; j < group.length; j++) {
                         Format format = group.getFormat(j);
+
+                        if (!isFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
+                            continue;
+                        }
+
                         if (format.height < minHeight) {
                             minHeight = format.height;
-                            groupIndex = i;
                             tracks.set(0, j);
                         }
                     }
                 }
-                // Selecting the closest match found
-                if (closestFormat != null && closestTrackIndex != -1) {
-                    // We found the closest match instead of an exact one
-                    groupIndex = i;
-                    tracks.set(0, closestTrackIndex);
-                }
             }
         } else if (trackType == C.TRACK_TYPE_TEXT && Util.SDK_INT > 18) { // Text default
             // Use system settings if possible
-            CaptioningManager captioningManager
-                    = (CaptioningManager)themedReactContext.getSystemService(Context.CAPTIONING_SERVICE);
+            CaptioningManager captioningManager = (CaptioningManager)themedReactContext.getSystemService(Context.CAPTIONING_SERVICE);
             if (captioningManager != null && captioningManager.isEnabled()) {
                 groupIndex = getGroupIndexForDefaultLocale(groups);
             }
         } else if (rendererIndex == C.TRACK_TYPE_AUDIO) { // Audio default
             groupIndex = getGroupIndexForDefaultLocale(groups);
+
+            if (groupIndex != C.INDEX_UNSET) {
+                List<Integer> indices = getSupportedTracksIndices(C.TRACK_TYPE_AUDIO, groups.get(groupIndex));
+
+                if (indices.isEmpty()) {
+                    groupIndex = C.INDEX_UNSET;
+                } else {
+                    tracks = indices;
+                }
+            }
         }
 
         if (groupIndex == C.INDEX_UNSET && trackType == C.TRACK_TYPE_VIDEO && groups.length != 0) { // Video auto
             // Add all tracks as valid options for ABR to choose from
-            TrackGroup group = groups.get(0);
-            ArrayList<Integer> allTracks = new ArrayList<>(group.length);
-            groupIndex = 0;
-            for (int j = 0; j < group.length; j++) {
-                allTracks.add(j);
-            }
+            groupIndex = 0; // Get first video group as exoplayer does not have full support of multiple video groups
+            List<Integer> indices = getSupportedTracksIndices(C.TRACK_TYPE_VIDEO, groups.get(groupIndex));
 
-            // Valiate list of all tracks and add only supported formats
-            int supportedFormatLength = 0;
-            for (int g = 0; g < allTracks.size(); g++) {
-                Format format = group.getFormat(g);
-                if (isFormatSupported(format)) {
-                    supportedFormatLength++;
-                }
-            }
-            if (allTracks.size() == 1) {
-                // With only one tracks we can't remove any tracks so attempt to play it anyway
-                tracks = allTracks;
+            if (!indices.isEmpty()) {
+                groupIndex = C.INDEX_UNSET;
             } else {
-                tracks =  new ArrayList<>(supportedFormatLength + 1);
-                for (int k = 0; k < allTracks.size(); k++) {
-                    Format format = group.getFormat(k);
-                    if (isFormatSupported(format)) {
-                        tracks.add(allTracks.get(k));
-                    }
-                }
+                tracks = indices;
             }
         }
 
@@ -1996,22 +2037,66 @@ public class ReactExoplayerView extends FrameLayout implements
         trackSelector.setParameters(selectionParameters);
     }
 
-    private boolean isFormatSupported(Format format) {
-        int width = format.width == Format.NO_VALUE ? 0 : format.width;
-        int height = format.height == Format.NO_VALUE ? 0 : format.height;
-        float frameRate = format.frameRate == Format.NO_VALUE ? 0 : format.frameRate;
+    private List<Integer> getSupportedTracksIndices(@C.TrackType int trackType, TrackGroup group) {
+        List<Integer> indices = new ArrayList<>(group.length);
+
+        for (int i = 0; i < group.length; i++) {
+            Format format = group.getFormat(i);
+            if (isFormatSupported(format, trackType)) {
+                indices.add(i);
+            }
+        }
+
+        return indices;
+    }
+
+    private boolean isFormatSupported(Format format, @C.TrackType int trackType) {
+        if (format.roleFlags == C.ROLE_FLAG_TRICK_PLAY) {
+            return false;
+        }
+
         String mimeType = format.sampleMimeType;
-        if (mimeType == null) {
+
+        if (null == mimeType) {
+            // Failed to get mimeType - assume it is supported
             return true;
         }
+
+        if (C.TRACK_TYPE_TEXT == trackType) {
+            return true;
+        }
+
         boolean isSupported;
+        boolean isHardwareSupported = false;
+        boolean isSoftwareSupported = false;
+
         try {
-            MediaCodecInfo codecInfo = MediaCodecUtil.getDecoderInfo(mimeType, false, false);
-            isSupported = codecInfo.isVideoSizeAndRateSupportedV21(width, height, frameRate);
+            for (MediaCodecInfo codecInfo : MediaCodecUtil.getDecoderInfos(mimeType, false, false)) {
+                int width = Format.NO_VALUE == format.width ? 0 : format.width;
+                int height = Format.NO_VALUE == format.height ? 0 : format.height;
+                float frameRate = Format.NO_VALUE == format.frameRate ? 0 : format.frameRate;
+
+                if (C.TRACK_TYPE_VIDEO == trackType && (width > 0 || height > 0 || frameRate > 0.0)) {
+                    return codecInfo.isVideoSizeAndRateSupportedV21(width, height, frameRate);
+                }
+
+                if (codecInfo.isFormatSupported(format)) {
+                    if (codecInfo.hardwareAccelerated) {
+                        isHardwareSupported = true;
+                    }
+
+                    if (codecInfo.softwareOnly) {
+                        isSoftwareSupported = true;
+                    }
+                }
+            }
+
+            isSupported = isHardwareSupported || isSoftwareSupported;
         } catch (Exception e) {
             // Failed to get decoder info - assume it is supported
             isSupported = true;
         }
+
         return isSupported;
     }
 
@@ -2054,12 +2139,26 @@ public class ReactExoplayerView extends FrameLayout implements
 
     public void setPausedModifier(boolean paused) {
         isPaused = paused;
+
         if (player != null) {
             if (!paused) {
                 resumePlayback();
             } else {
                 pausePlayback();
             }
+        }
+    }
+
+    public void setPausedModifier(boolean paused, Promise promise) {
+        this.setPausedModifier(paused);
+        promise.resolve(null);
+    }
+
+    public void isPlayerPaused(Promise promise) {
+        if (player != null) {
+            promise.resolve(isPaused);
+        } else {
+            promise.resolve(true);
         }
     }
 
@@ -2130,6 +2229,21 @@ public class ReactExoplayerView extends FrameLayout implements
         }
     }
 
+    public void setInitialBitrateEstimate(boolean enableLowInitialBitrate) {
+        if (enableLowInitialBitrate) {
+            lowInitBitrateEnabled = true;
+            bandwidthMeter = new DefaultBandwidthMeter.Builder(getContext())
+                    .setInitialBitrateEstimate(0)
+                    .build();
+        }
+    }
+
+    public void setCodecsPriority(boolean preferSoftCodecs) {
+        if (preferSoftCodecs) {
+            codecPriority = DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER;
+        }
+    }
+
     public void setMinLoadRetryCountModifier(int newMinLoadRetryCount) {
         minLoadRetryCount = newMinLoadRetryCount;
         releasePlayer();
@@ -2171,14 +2285,18 @@ public class ReactExoplayerView extends FrameLayout implements
         return preventsDisplaySleepDuringVideoPlayback;
     }
 
-    private void updateFullScreenButtonVisibility() {
+    private void updateFullScreenButtonVisbility() {
         if (playerControlView != null) {
             final ImageButton fullScreenButton = playerControlView.findViewById(R.id.exo_fullscreen);
-            //Handling the fullScreenButton click event
-            if (isFullscreen && fullScreenPlayerView != null && !fullScreenPlayerView.isShowing()) {
-                fullScreenButton.setVisibility(GONE);
+            if (controls) {
+                //Handling the fullScreenButton click event
+                if (isFullscreen && fullScreenPlayerView != null && !fullScreenPlayerView.isShowing()) {
+                    fullScreenButton.setVisibility(GONE);
+                } else {
+                    fullScreenButton.setVisibility(VISIBLE);
+                }
             } else {
-                fullScreenButton.setVisibility(VISIBLE);
+                fullScreenButton.setVisibility(GONE);
             }
         }
     }
@@ -2202,7 +2320,7 @@ public class ReactExoplayerView extends FrameLayout implements
         WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(window, window.getDecorView());
         if (isFullscreen) {
             eventEmitter.fullscreenWillPresent();
-            if (fullScreenPlayerView != null) {
+            if (controls && fullScreenPlayerView != null) {
                 fullScreenPlayerView.show();
             }
             UiThreadUtil.runOnUiThread(() -> {
@@ -2213,10 +2331,9 @@ public class ReactExoplayerView extends FrameLayout implements
             });
         } else {
             eventEmitter.fullscreenWillDismiss();
-            if (fullScreenPlayerView != null) {
+            if (controls && fullScreenPlayerView != null) {
                 fullScreenPlayerView.dismiss();
                 reLayoutControls();
-                setControls(controls);
             }
             UiThreadUtil.runOnUiThread(() -> {
                 WindowCompat.setDecorFitsSystemWindows(window, true);
@@ -2225,11 +2342,11 @@ public class ReactExoplayerView extends FrameLayout implements
             });
         }
         // need to be done at the end to avoid hiding fullscreen control button when fullScreenPlayerView is shown
-        updateFullScreenButtonVisibility();
+        updateFullScreenButtonVisbility();
     }
 
     public void setUseTextureView(boolean useTextureView) {
-        boolean finallyUseTextureView = useTextureView && drmProps == null;
+        boolean finallyUseTextureView = useTextureView && this.drmUUID == null;
         exoPlayerView.setUseTextureView(finallyUseTextureView);
     }
 
@@ -2256,11 +2373,16 @@ public class ReactExoplayerView extends FrameLayout implements
         initializePlayer();
     }
 
-    public void setDrm(DRMProps drmProps) {
-        this.drmProps = drmProps;
-        if (drmProps != null && drmProps.getDrmType() != null) {
-            this.drmProps.setDrmUUID(Util.getDrmUuid(drmProps.getDrmType()));
-        }
+    public void setDrmType(UUID drmType) {
+        this.drmUUID = drmType;
+    }
+
+    public void setDrmLicenseUrl(String licenseUrl){
+        this.drmLicenseUrl = licenseUrl;
+    }
+
+    public void setDrmLicenseHeader(String[] header){
+        this.drmLicenseHeader = header;
     }
 
     @Override
@@ -2303,7 +2425,7 @@ public class ReactExoplayerView extends FrameLayout implements
         this.controls = controls;
         if (controls) {
             addPlayerControl();
-            updateFullScreenButtonVisibility();
+            updateFullScreenButtonVisbility();
         } else {
             int indexOfPC = indexOfChild(playerControlView);
             if (indexOfPC != -1) {

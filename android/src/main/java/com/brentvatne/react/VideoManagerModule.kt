@@ -37,9 +37,16 @@ class VideoManagerModule(reactContext: ReactApplicationContext?) : ReactContextB
     }
 
     @ReactMethod
-    fun setPlayerPauseState(paused: Boolean?, reactTag: Int) {
+    fun setPlayerPauseState(paused: Boolean?, reactTag: Int, promise: Promise) {
         performOnPlayerView(reactTag) {
-            it?.setPausedModifier(paused!!)
+            it?.setPausedModifier(paused!!, promise)
+        }
+    }
+
+    @ReactMethod
+    fun isPlayerPaused(reactTag: Int, promise: Promise) {
+        performOnPlayerView(reactTag) {
+            it?.isPlayerPaused(promise)
         }
     }
 
@@ -66,13 +73,6 @@ class VideoManagerModule(reactContext: ReactApplicationContext?) : ReactContextB
     fun getCurrentPosition(reactTag: Int, promise: Promise) {
         performOnPlayerView(reactTag) {
             it?.getCurrentPosition(promise)
-        }
-    }
-
-    @ReactMethod
-    fun setFullScreen(fullScreen: Boolean, reactTag: Int) {
-        performOnPlayerView(reactTag) {
-            it?.setFullscreen(fullScreen)
         }
     }
 

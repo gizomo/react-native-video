@@ -72,12 +72,21 @@ class RCTVideoManager: RCTViewManager {
         })
     }
 
-    @objc(setPlayerPauseState:reactTag:)
-    func setPlayerPauseState(paused: NSNumber, reactTag: NSNumber) {
+    @objc(setPlayerPauseState:reactTag:resolver:rejecter:)
+    func setPlayerPauseState(paused: NSNumber, reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) -> Void {
         performOnVideoView(withReactTag: reactTag, callback: { videoView in
             videoView?.setPaused(paused.boolValue)
+            resolve(nil)
         })
     }
+
+    @objc(isPlayerPaused:resolver:rejecter:)
+    func isPlayerPaused(reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) -> Void {
+        performOnVideoView(withReactTag: reactTag, callback: { videoView in
+            resolve(videoView?.isPaused())
+        })
+    }
+
 
     @objc(setVolume:reactTag:)
     func setVolume(value: Float, reactTag: NSNumber) {
@@ -90,13 +99,6 @@ class RCTVideoManager: RCTViewManager {
     func getCurrentPosition(reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         performOnVideoView(withReactTag: reactTag, callback: { videoView in
             videoView?.getCurrentPlaybackTime(resolve, reject)
-        })
-    }
-
-    @objc(setFullScreen:reactTag:)
-    func setFullScreen(fullScreen: Bool, reactTag: NSNumber) {
-        performOnVideoView(withReactTag: reactTag, callback: { videoView in
-            videoView?.setFullscreen(fullScreen)
         })
     }
 

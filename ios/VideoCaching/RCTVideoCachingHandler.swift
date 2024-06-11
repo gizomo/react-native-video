@@ -4,7 +4,7 @@ import Foundation
 
 class RCTVideoCachingHandler: NSObject, DVAssetLoaderDelegatesDelegate {
     private var _videoCache: RCTVideoCache! = RCTVideoCache.sharedInstance()
-    var playerItemPrepareText: ((AVAsset?, NSDictionary?, String) async -> AVPlayerItem)?
+    var playerItemPrepareText: ((AVAsset?, NSDictionary?, String?) async -> AVPlayerItem)?
 
     override init() {
         super.init()

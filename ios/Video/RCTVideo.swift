@@ -406,15 +406,6 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             throw NSError(domain: "", code: 0, userInfo: nil)
         }
 
-        guard let assetResult = RCTVideoUtils.prepareAsset(source: source),
-              let asset = assetResult.asset,
-              let assetOptions = assetResult.assetOptions else {
-            DebugLog("Could not find video URL in source '\(String(describing: _source))'")
-            isSetSourceOngoing = false
-            applyNextSource()
-            throw NSError(domain: "", code: 0, userInfo: nil)
-        }
-
         if let startPosition = _source?.startPosition {
             _startPosition = startPosition / 1000
         }
@@ -559,7 +550,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     }
 
     func playerItemPrepareText(asset: AVAsset!, assetOptions: NSDictionary?, uri: String) async -> AVPlayerItem {
-        if (self._textTracks == nil) || self._textTracks?.isEmpty == true || (uri.hasSuffix(".m3u8")) {
+        if (self._textTracks == nil) || self._textTracks?.isEmpty == true || RCTVideoUtils.hasM3U8Extension(string: uri) {
             return await self.playerItemPropegateMetadata(AVPlayerItem(asset: asset))
         }
 
@@ -708,6 +699,11 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     func setMixWithOthers(_ mixWithOthers: String?) {
         _mixWithOthers = mixWithOthers
         applyModifiers()
+    }
+
+    @objc
+    func isPaused() -> Bool {
+        return _paused
     }
 
     @objc
@@ -1004,7 +1000,6 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             _presentingViewController?.dismiss(animated: true, completion: { [weak self] in
                 self?.videoPlayerViewControllerDidDismiss(playerViewController: _playerViewController)
             })
-            setControls(_controls)
         }
     }
 

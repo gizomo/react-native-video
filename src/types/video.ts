@@ -28,8 +28,8 @@ export type ReactVideoSourceProperties = {
 
 export type ReactVideoSource = Readonly<
   Omit<ReactVideoSourceProperties, 'uri'> & {
-    uri?: string | NodeRequire;
-  }
+  uri?: string | NodeRequire;
+}
 >;
 
 export type VideoMetadata = Readonly<{
@@ -231,6 +231,7 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   fullscreenOrientation?: EnumValues<FullscreenOrientationType>; // iOS
   hideShutterView?: boolean; //	Android
   ignoreSilentSwitch?: EnumValues<IgnoreSilentSwitchType>; // iOS
+  lowInitBitRate?: boolean;
   minLoadRetryCount?: number; // Android
   maxBitRate?: number;
   mixWithOthers?: EnumValues<MixWithOthersType>; // iOS
@@ -241,6 +242,7 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   playWhenInactive?: boolean; // iOS
   poster?: string;
   posterResizeMode?: EnumValues<PosterResizeModeType>;
+  preferSoftCodecs?: boolean;
   preferredForwardBufferDuration?: number; // iOS
   preventsDisplaySleepDuringVideoPlayback?: boolean;
   progressUpdateInterval?: number;
