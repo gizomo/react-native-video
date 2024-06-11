@@ -2006,12 +2006,12 @@ public class ReactExoplayerView extends FrameLayout implements
             }
         }
 
-        if (groupIndex == C.INDEX_UNSET && trackType == C.TRACK_TYPE_VIDEO && groups.length != 0) { // Video auto
-            // Add all tracks as valid options for ABR to choose from
+        // Video auto (add all supported tracks as valid options for ABR to choose from)
+        if (groupIndex == C.INDEX_UNSET && trackType == C.TRACK_TYPE_VIDEO && groups.length != 0) {
             groupIndex = 0; // Get first video group as exoplayer does not have full support of multiple video groups
             List<Integer> indices = getSupportedTracksIndices(C.TRACK_TYPE_VIDEO, groups.get(groupIndex));
 
-            if (!indices.isEmpty()) {
+            if (indices.isEmpty()) {
                 groupIndex = C.INDEX_UNSET;
             } else {
                 tracks = indices;
