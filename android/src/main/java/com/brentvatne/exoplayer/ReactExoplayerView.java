@@ -2013,6 +2013,10 @@ public class ReactExoplayerView extends FrameLayout implements
 
                 MediaFormat format = track.getFormat();
 
+                if (format == null) {
+                    continue;
+                }
+
                 if (format.getInteger(KEY_HEIGHT) == height) {
                     exactMatchedIndex = i;
                     break;
@@ -2055,7 +2059,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
                     MediaFormat format = track.getFormat();
 
-                    if (!isMediaFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
+                    if (format == null || !isMediaFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
                         continue;
                     }
 
@@ -2101,7 +2105,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
             MediaFormat format = track.getFormat();
 
-            if (trackType == MEDIA_TRACK_TYPE_AUDIO && !isMediaFormatSupported(format, trackType)) {
+            if (trackType == MEDIA_TRACK_TYPE_AUDIO && format != null && !isMediaFormatSupported(format, trackType)) {
                 continue;
             }
 
@@ -2841,28 +2845,34 @@ public class ReactExoplayerView extends FrameLayout implements
                         int trackType = track.getTrackType();
                         boolean selected = mediaPlayer.getSelectedTrack(trackType) == i;
 
-                        if (format != null) {
-                            switch (trackType) {
-                                case MEDIA_TRACK_TYPE_AUDIO:
-                                    if (isMediaFormatSupported(format, MEDIA_TRACK_TYPE_AUDIO)) {
-                                        Track audioTrack = mediaPlayerTrackToGenericTrack(format, i, selected);
-                                        audioTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
-                                        audioTracks.add(audioTrack);
-                                    }
+                        switch (trackType) {
+                            case MEDIA_TRACK_TYPE_AUDIO:
+                                Track audioTrack = mediaPlayerTrackToGenericTrack(track, i, selected);
 
+                                if (format != null && !isMediaFormatSupported(format, MEDIA_TRACK_TYPE_AUDIO)) {
                                     break;
-                                case MEDIA_TRACK_TYPE_SUBTITLE:
-                                    Track textTrack = mediaPlayerTrackToGenericTrack(format, i, selected);
-                                    textTracks.add(textTrack);
+                                }
+
+                                audioTracks.add(audioTrack);
+
+                                break;
+                            case MEDIA_TRACK_TYPE_SUBTITLE:
+                                Track textTrack = mediaPlayerTrackToGenericTrack(track, i, selected);
+
+                                if (format != null) textTrack.setMimeType(format.getString(KEY_MIME));
+
+                                textTracks.add(textTrack);
+                                break;
+                            case MEDIA_TRACK_TYPE_VIDEO:
+                                VideoTrack videoTrack = mediaPlayerTrackToGenericVideoTrack(format, i, selected);
+
+                                if (format != null && !isMediaFormatSupported(format, MEDIA_TRACK_TYPE_VIDEO)) {
                                     break;
-                                case MEDIA_TRACK_TYPE_VIDEO:
-                                    if (isMediaFormatSupported(format, MEDIA_TRACK_TYPE_VIDEO)) {
-                                        VideoTrack videoTrack = mediaPlayerTrackToGenericVideoTrack(format, i, selected);
-                                        videoTracks.add(videoTrack);
-                                    }
-                                default:
-                                    break;
-                            }
+                                }
+
+                                videoTracks.add(videoTrack);
+                            default:
+                                break;
                         }
                     }
 
@@ -2969,23 +2979,35 @@ public class ReactExoplayerView extends FrameLayout implements
         return isSupported;
     }
 
-    private Track mediaPlayerTrackToGenericTrack(MediaFormat format, int trackIndex, boolean selected) {
+    private Track mediaPlayerTrackToGenericTrack(MediaPlayer.TrackInfo trackInfo, int trackIndex, boolean selected) {
         Track track = new Track();
         track.setIndex(trackIndex);
         track.setSelected(selected);
+        track.setLanguage(trackInfo.getLanguage());
 
-        if (format.getString(KEY_MIME) != null) track.setMimeType(format.getString(KEY_MIME));
+        MediaFormat format = trackInfo.getFormat();
 
-        if (format.getString(KEY_LANGUAGE) != null) track.setLanguage(format.getString(KEY_LANGUAGE));
+        if (format != null) {
+            track.setMimeType(format.getString(KEY_MIME));
+
+            if (trackInfo.getTrackType() == MEDIA_TRACK_TYPE_AUDIO) {
+                track.setBitrate(format.getInteger(KEY_BIT_RATE));
+            }
+        }
 
         return track;
     }
 
     private VideoTrack mediaPlayerTrackToGenericVideoTrack(MediaFormat format, int trackIndex, boolean selected) {
         VideoTrack videoTrack = new VideoTrack();
-        videoTrack.setWidth(format.getInteger(KEY_WIDTH));
-        videoTrack.setHeight(format.getInteger(KEY_HEIGHT));
-        videoTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
+
+        if (format != null) {
+            videoTrack.setWidth(format.getInteger(KEY_WIDTH));
+            videoTrack.setHeight(format.getInteger(KEY_HEIGHT));
+            videoTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
+        }
+
+        videoTrack.setSelected(selected);
         videoTrack.setTrackId(String.valueOf(trackIndex));
         videoTrack.setIndex(trackIndex);
 
