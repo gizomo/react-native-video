@@ -1,5 +1,20 @@
 package com.brentvatne.exoplayer;
 
+import static android.media.MediaFormat.KEY_BIT_RATE;
+import static android.media.MediaFormat.KEY_FRAME_RATE;
+import static android.media.MediaFormat.KEY_HEIGHT;
+import static android.media.MediaFormat.KEY_LANGUAGE;
+import static android.media.MediaFormat.KEY_MIME;
+import static android.media.MediaFormat.KEY_SAMPLE_RATE;
+import static android.media.MediaFormat.KEY_WIDTH;
+import static android.media.MediaPlayer.MEDIA_ERROR_IO;
+import static android.media.MediaPlayer.MEDIA_ERROR_MALFORMED;
+import static android.media.MediaPlayer.MEDIA_ERROR_TIMED_OUT;
+import static android.media.MediaPlayer.MEDIA_ERROR_UNSUPPORTED;
+import static android.media.MediaPlayer.SEEK_PREVIOUS_SYNC;
+import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO;
+import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE;
+import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_VIDEO;
 import static androidx.media3.common.C.CONTENT_TYPE_DASH;
 import static androidx.media3.common.C.CONTENT_TYPE_HLS;
 import static androidx.media3.common.C.CONTENT_TYPE_OTHER;
@@ -17,6 +32,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.media.AudioManager;
+import android.media.MediaFormat;
+import android.media.MediaPlayer;
+import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -184,6 +202,8 @@ public class ReactExoplayerView extends FrameLayout implements
 
     private DataSource.Factory mediaDataSourceFactory;
     private ExoPlayer player;
+    private MediaPlayer mediaPlayer;
+    private boolean mediaPlayerValid = false;
     private DefaultTrackSelector trackSelector;
     private boolean playerNeedsSource;
     private MediaMetadata customMetadata;
@@ -259,6 +279,7 @@ public class ReactExoplayerView extends FrameLayout implements
     private long lastPos = -1;
     private long lastBufferDuration = -1;
     private long lastDuration = -1;
+    private long mediaPlayerBuffered = 0;
 
     private boolean viewHasDropped = false;
     private void updateProgress() {
@@ -273,15 +294,32 @@ public class ReactExoplayerView extends FrameLayout implements
                 pos = duration;
             }
 
-            if (lastPos != pos
-                    || lastBufferDuration != bufferedDuration
-                    || lastDuration != duration) {
+            if (lastPos != pos || lastBufferDuration != bufferedDuration || lastDuration != duration) {
                 lastPos = pos;
                 lastBufferDuration = bufferedDuration;
                 lastDuration = duration;
-                eventEmitter.progressChanged(pos, bufferedDuration, player.getDuration(), getPositionInFirstPeriodMsForCurrentWindow(pos));
+                eventEmitter.progressChanged(pos, bufferedDuration, duration, getPositionInFirstPeriodMsForCurrentWindow(pos));
             }
         }
+
+        if (mediaPlayer != null) {
+            long duration = mediaPlayer.getDuration();
+            long pos = mediaPlayer.getCurrentPosition();
+
+            if (pos > duration) {
+                pos = duration;
+            }
+
+            if (lastPos != pos || lastDuration != duration) {
+                lastPos = pos;
+                lastDuration = duration;
+                eventEmitter.progressChanged(pos, mediaPlayerBuffered, duration, getPositionInFirstPeriodMsForCurrentWindow(pos));
+            }
+        }
+    }
+
+    private boolean isMediaPlayerValid() {
+        return mediaPlayer != null && mediaPlayerValid;
     }
 
     private final Handler progressHandler = new Handler(Looper.getMainLooper()) {
@@ -297,9 +335,13 @@ public class ReactExoplayerView extends FrameLayout implements
 
     public double getPositionInFirstPeriodMsForCurrentWindow(long currentPosition) {
         Timeline.Window window = new Timeline.Window();
-        if(!player.getCurrentTimeline().isEmpty()) {
-            player.getCurrentTimeline().getWindow(player.getCurrentMediaItemIndex(), window);
+
+        if (player != null) {
+            if(!player.getCurrentTimeline().isEmpty()) {
+                player.getCurrentTimeline().getWindow(player.getCurrentMediaItemIndex(), window);
+            }
         }
+
         return window.windowStartTimeMs + currentPosition;
     }
 
@@ -656,7 +698,10 @@ public class ReactExoplayerView extends FrameLayout implements
                 return;
             }
             try {
-                if (player == null) {
+                if (source.isUdp() || source.isRtp()) {
+                    initializeMediaPlayer(self);
+                    return;
+                } else if (player == null) {
                     // Initialize core configuration and listeners
                     initializePlayerCore(self);
                 }
@@ -707,12 +752,65 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     public void getCurrentPosition(Promise promise) {
+        if (isMediaPlayerValid()) {
+            double currentPosition = mediaPlayer.getCurrentPosition() / 1000;
+            promise.resolve(currentPosition);
+            return;
+        }
+
         if (player != null) {
             double currentPosition = player.getCurrentPosition() / 1000;
             promise.resolve(currentPosition);
         } else {
             promise.reject("PLAYER_NOT_AVAILABLE", "Player is not initialized.");
         }
+    }
+
+    private void initializeMediaPlayer(ReactExoplayerView self) {
+        if (mediaPlayer == null) {
+            mediaPlayer = new MediaPlayer();
+            exoPlayerView.setMediaPlayer(mediaPlayer);
+        }
+
+        exoPlayerView.invalidateAspectRatio();
+        reLayout(exoPlayerView);
+
+        try {
+            mediaPlayer.setDataSource(self.getContext(), self.source.getUri());
+        } catch (Exception ex) {
+            playerNeedsSource = true;
+            DebugLog.e(TAG, "Failed to set DataSource for MediaPlayer!");
+            DebugLog.e(TAG, ex.toString());
+            ex.printStackTrace();
+            eventEmitter.error(ex.toString(), ex, "1001");
+            return;
+        }
+
+        float volume = muted ? 0.f : audioVolume * 1;
+        mediaPlayer.setVolume(volume, volume);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PlaybackParams playbackParams = new PlaybackParams();
+            playbackParams.setSpeed(rate);
+            playbackParams.setPitch(1f);
+            mediaPlayer.setPlaybackParams(playbackParams);
+        }
+
+        changeAudioOutput(this.audioOutput);
+
+        MediaPlayerListener listener = new MediaPlayerListener();
+
+        mediaPlayer.setOnErrorListener(listener);
+        mediaPlayer.setOnPreparedListener(listener);
+        mediaPlayer.setOnBufferingUpdateListener(listener);
+        mediaPlayer.setOnSeekCompleteListener(listener);
+        mediaPlayer.setOnCompletionListener(listener);
+        mediaPlayer.setOnInfoListener(listener);
+
+        loadVideoStarted = true;
+
+        mediaPlayer.prepareAsync();
+        eventEmitter.loadStart();
     }
 
     private void initializePlayerCore(ReactExoplayerView self) {
@@ -722,23 +820,19 @@ public class ReactExoplayerView extends FrameLayout implements
                 .setMaxVideoBitrate(maxBitRate == 0 ? Integer.MAX_VALUE : maxBitRate));
 
         DefaultAllocator allocator = new DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE);
-        RNVLoadControl loadControl = new RNVLoadControl(
-                allocator,
-                bufferConfig
-        );
-        DefaultRenderersFactory renderersFactory =
-                new DefaultRenderersFactory(getContext())
-                        .setExtensionRendererMode(codecPriority)
-                        .setEnableDecoderFallback(true)
-                        .forceEnableMediaCodecAsynchronousQueueing();
+        RNVLoadControl loadControl = new RNVLoadControl(allocator, bufferConfig);
+        DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(getContext())
+            .setExtensionRendererMode(codecPriority)
+            .setEnableDecoderFallback(true)
+            .forceEnableMediaCodecAsynchronousQueueing();
 
         // Create an AdsLoader.
-        adsLoader = new ImaAdsLoader
-                .Builder(themedReactContext)
-                .setAdEventListener(this)
-                .setAdErrorListener(this)
-                .build();
+        adsLoader = new ImaAdsLoader.Builder(themedReactContext)
+            .setAdEventListener(this)
+            .setAdErrorListener(this)
+            .build();
         DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(mediaDataSourceFactory);
+
         if (useCache) {
             mediaSourceFactory.setDataSourceFactory(RNVSimpleCache.INSTANCE.getCacheFactory(buildHttpDataSourceFactory(true)));
         }
@@ -748,11 +842,11 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         player = new ExoPlayer.Builder(getContext(), renderersFactory)
-                .setTrackSelector(self.trackSelector)
-                .setBandwidthMeter(bandwidthMeter)
-                .setLoadControl(loadControl)
-                .setMediaSourceFactory(mediaSourceFactory)
-                .build();
+            .setTrackSelector(self.trackSelector)
+            .setBandwidthMeter(bandwidthMeter)
+            .setLoadControl(loadControl)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build();
         refreshDebugState();
         player.addListener(self);
         player.setVolume(muted ? 0.f : audioVolume * 1);
@@ -1120,14 +1214,14 @@ public class ReactExoplayerView extends FrameLayout implements
 
     private MediaSource buildTextSource(String title, Uri uri, String mimeType, String language) {
         MediaItem.SubtitleConfiguration subtitleConfiguration = new MediaItem.SubtitleConfiguration.Builder(uri)
-                .setMimeType(mimeType)
-                .setLanguage(language)
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
-                .setLabel(title)
-                .build();
+            .setMimeType(mimeType)
+            .setLanguage(language)
+            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+            .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
+            .setLabel(title)
+            .build();
         return new SingleSampleMediaSource.Factory(mediaDataSourceFactory)
-                .createMediaSource(subtitleConfiguration, C.TIME_UNSET);
+            .createMediaSource(subtitleConfiguration, C.TIME_UNSET);
     }
 
     private void releasePlayer() {
@@ -1149,11 +1243,17 @@ public class ReactExoplayerView extends FrameLayout implements
             player = null;
         }
 
+        if (mediaPlayer != null) {
+            mediaPlayer.reset();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
+
         if (adsLoader != null) {
             adsLoader.release();
         }
         adsLoader = null;
-        progressHandler.removeMessages(SHOW_PROGRESS);
+        clearProgressMessageHandler();
         audioBecomingNoisyReceiver.removeListener();
         bandwidthMeter.removeEventListener(this);
 
@@ -1243,6 +1343,13 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     private void resumePlayback() {
+        if (isMediaPlayerValid()) {
+            mediaPlayer.start();
+            setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+
+            return;
+        }
+
         if (player != null) {
             if (!player.getPlayWhenReady()) {
                 setPlayWhenReady(true);
@@ -1252,6 +1359,13 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     private void pausePlayback() {
+        if (isMediaPlayerValid()) {
+            mediaPlayer.pause();
+            setKeepScreenOn(false);
+
+            return;
+        }
+
         if (player != null) {
             if (player.getPlayWhenReady()) {
                 setPlayWhenReady(false);
@@ -1273,9 +1387,11 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     private void updateResumePosition() {
-        resumeWindow = player.getCurrentMediaItemIndex();
-        resumePosition = player.isCurrentMediaItemSeekable() ? Math.max(0, player.getCurrentPosition())
-                : C.TIME_UNSET;
+        if (player != null) {
+            resumeWindow = player.getCurrentMediaItemIndex();
+            resumePosition = player.isCurrentMediaItemSeekable() ? Math.max(0, player.getCurrentPosition())
+                    : C.TIME_UNSET;
+        }
     }
 
     private void clearResumePosition() {
@@ -1851,6 +1967,153 @@ public class ReactExoplayerView extends FrameLayout implements
         trackSelector.setParameters(disableParameters);
     }
 
+    public void disableMediaTrack(int index) {
+        mediaPlayer.deselectTrack(index);
+    }
+
+    public void setSelectedMediaTrack(int trackType, String type, String value) {
+        if (TextUtils.isEmpty(type)) {
+            type = "default";
+        }
+
+        if ("disabled".equals(type)) {
+            if (trackType == MEDIA_TRACK_TYPE_SUBTITLE) {
+                disableMediaTrack(Integer.parseInt(value));
+            }
+        } else if ("language".equals(type)) {
+            MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
+
+            for (int i = 0; i < tracks.length; ++i) {
+                MediaPlayer.TrackInfo track = tracks[i];
+
+                if (track.getTrackType() != trackType) {
+                    continue;
+                }
+
+                if (track.getLanguage().equals(value)) {
+                    mediaPlayer.selectTrack(i);
+                    return;
+                }
+            }
+        } else if ("index".equals(type)) {
+            mediaPlayer.selectTrack(Integer.parseInt(value));
+        } else if ("resolution".equals(type)) {
+            int height = Integer.parseInt(value);
+            MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
+            MediaFormat closestFormat = null;
+            int exactMatchedIndex = C.INDEX_UNSET;
+            int closestFormatIndex = C.INDEX_UNSET;
+
+            for (int i = 0; i < tracks.length; ++i) {
+                MediaPlayer.TrackInfo track = tracks[i];
+
+                if (track.getTrackType() != trackType) {
+                    continue;
+                }
+
+                MediaFormat format = track.getFormat();
+
+                if (format.getInteger(KEY_HEIGHT) == height) {
+                    exactMatchedIndex = i;
+                    break;
+                } else {
+                    // When using content resolution rather than ads, we need to try and find the closest match if there is no exact match
+                    if (closestFormat != null) {
+                        if ((format.getInteger(KEY_BIT_RATE) > closestFormat.getInteger(KEY_BIT_RATE)
+                                || format.getInteger(KEY_HEIGHT) > closestFormat.getInteger(KEY_HEIGHT))
+                                && format.getInteger(KEY_HEIGHT) < height) {
+                            // Higher quality match
+                            closestFormat = format;
+                            closestFormatIndex = i;
+                        }
+                    } else if(format.getInteger(KEY_HEIGHT) < height) {
+                        closestFormat = format;
+                        closestFormatIndex = i;
+                    }
+                }
+            }
+
+            if (exactMatchedIndex != C.INDEX_UNSET) {
+                mediaPlayer.selectTrack(exactMatchedIndex);
+                return;
+            }
+
+            // Selecting the closest match found
+            if (C.INDEX_UNSET != closestFormatIndex) {
+                mediaPlayer.selectTrack(closestFormatIndex);
+            } else {
+                // No close match found - so we pick the lowest quality
+                int minHeight = Integer.MAX_VALUE;
+                int minIndex = C.INDEX_UNSET;
+
+                for (int j = 0; j < tracks.length; j++) {
+                    MediaPlayer.TrackInfo track = tracks[j];
+
+                    if (track.getTrackType() != trackType) {
+                        continue;
+                    }
+
+                    MediaFormat format = track.getFormat();
+
+                    if (!isMediaFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
+                        continue;
+                    }
+
+                    if (format.getInteger(KEY_HEIGHT) < minHeight) {
+                        minHeight = format.getInteger(KEY_HEIGHT);
+                        minIndex = j;
+                    }
+                }
+
+                if (minHeight != C.INDEX_UNSET) {
+                    mediaPlayer.selectTrack(minIndex);
+                }
+            }
+        } else if (trackType == MEDIA_TRACK_TYPE_SUBTITLE && Util.SDK_INT > 18) { // Text default
+            // Use system settings if possible
+            CaptioningManager captioningManager = (CaptioningManager)themedReactContext.getSystemService(Context.CAPTIONING_SERVICE);
+            if (captioningManager != null && captioningManager.isEnabled()) {
+                int index = getMediaTrackIndexForDefaultLocale(trackType);
+
+                if (index != C.INDEX_UNSET) {
+                    mediaPlayer.selectTrack(index);
+                }
+            }
+        } else if (trackType == C.TRACK_TYPE_AUDIO) { // Audio default
+            int index = getMediaTrackIndexForDefaultLocale(trackType);
+            mediaPlayer.selectTrack(index != C.INDEX_UNSET ? index : 0);
+        }
+    }
+
+    private int getMediaTrackIndexForDefaultLocale(int trackType) {
+        int index = C.INDEX_UNSET;
+        String locale2 = Locale.getDefault().getLanguage(); // 2 letter code
+        String locale3 = Locale.getDefault().getISO3Language(); // 3 letter code
+        MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
+
+        for (int i = 0; i < tracks.length; ++i) {
+            MediaPlayer.TrackInfo track = tracks[i];
+            String language = track.getLanguage();
+
+            if (track.getTrackType() != trackType) {
+                continue;
+            }
+
+            MediaFormat format = track.getFormat();
+
+            if (trackType == MEDIA_TRACK_TYPE_AUDIO && !isMediaFormatSupported(format, trackType)) {
+                continue;
+            }
+
+            if (language != null && (language.equals(locale2) || language.equals(locale3))) {
+                index = i;
+                break;
+            }
+        }
+
+        return index;
+    }
+
     public void setSelectedTrack(int trackType, String type, String value) {
         if (player == null) return;
         int rendererIndex = getTrackRendererIndex(trackType);
@@ -1992,7 +2255,7 @@ public class ReactExoplayerView extends FrameLayout implements
             if (captioningManager != null && captioningManager.isEnabled()) {
                 groupIndex = getGroupIndexForDefaultLocale(groups);
             }
-        } else if (rendererIndex == C.TRACK_TYPE_AUDIO) { // Audio default
+        } else if (trackType == C.TRACK_TYPE_AUDIO) { // Audio default
             groupIndex = getGroupIndexForDefaultLocale(groups);
 
             if (groupIndex != C.INDEX_UNSET) {
@@ -2072,14 +2335,6 @@ public class ReactExoplayerView extends FrameLayout implements
 
         try {
             for (MediaCodecInfo codecInfo : MediaCodecUtil.getDecoderInfos(mimeType, false, false)) {
-                int width = Format.NO_VALUE == format.width ? 0 : format.width;
-                int height = Format.NO_VALUE == format.height ? 0 : format.height;
-                float frameRate = Format.NO_VALUE == format.frameRate ? 0 : format.frameRate;
-
-                if (C.TRACK_TYPE_VIDEO == trackType && (width > 0 || height > 0 || frameRate > 0.0)) {
-                    return codecInfo.isVideoSizeAndRateSupportedV21(width, height, frameRate);
-                }
-
                 if (codecInfo.isFormatSupported(format)) {
                     if (codecInfo.hardwareAccelerated) {
                         isHardwareSupported = true;
@@ -2122,25 +2377,40 @@ public class ReactExoplayerView extends FrameLayout implements
     public void setSelectedVideoTrack(String type, String value) {
         videoTrackType = type;
         videoTrackValue = value;
-        if (!loadVideoStarted) setSelectedTrack(C.TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
+
+        if (mediaPlayer != null) {
+            if (!loadVideoStarted) setSelectedMediaTrack(MEDIA_TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
+        } else {
+            if (!loadVideoStarted) setSelectedTrack(C.TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
+        }
     }
 
     public void setSelectedAudioTrack(String type, String value) {
         audioTrackType = type;
         audioTrackValue = value;
-        setSelectedTrack(C.TRACK_TYPE_AUDIO, audioTrackType, audioTrackValue);
+
+        if (mediaPlayer != null) {
+            setSelectedMediaTrack(MEDIA_TRACK_TYPE_AUDIO, audioTrackType, audioTrackValue);
+        } else {
+            setSelectedTrack(C.TRACK_TYPE_AUDIO, audioTrackType, audioTrackValue);
+        }
     }
 
     public void setSelectedTextTrack(String type, String value) {
         textTrackType = type;
         textTrackValue = value;
-        setSelectedTrack(C.TRACK_TYPE_TEXT, textTrackType, textTrackValue);
+
+        if (mediaPlayer != null) {
+            setSelectedMediaTrack(MEDIA_TRACK_TYPE_SUBTITLE, textTrackType, textTrackValue);
+        } else {
+            setSelectedTrack(C.TRACK_TYPE_TEXT, textTrackType, textTrackValue);
+        }
     }
 
     public void setPausedModifier(boolean paused) {
         isPaused = paused;
 
-        if (player != null) {
+        if (player != null || mediaPlayer != null) {
             if (!paused) {
                 resumePlayback();
             } else {
@@ -2155,6 +2425,12 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     public void isPlayerPaused(Promise promise) {
+        if (mediaPlayer != null) {
+            promise.resolve(!mediaPlayer.isPlaying());
+
+            return;
+        }
+
         if (player != null) {
             promise.resolve(isPaused);
         } else {
@@ -2164,8 +2440,14 @@ public class ReactExoplayerView extends FrameLayout implements
 
     public void setMutedModifier(boolean muted) {
         this.muted = muted;
+
         if (player != null) {
             player.setVolume(muted ? 0.f : audioVolume);
+        }
+
+        if (mediaPlayer != null) {
+            float volume = muted ? 0.f : audioVolume;
+            mediaPlayer.setVolume(volume, volume);
         }
     }
 
@@ -2174,15 +2456,27 @@ public class ReactExoplayerView extends FrameLayout implements
             int streamType = output.getStreamType();
             int usage = Util.getAudioUsageForStreamType(streamType);
             int contentType = Util.getAudioContentTypeForStreamType(streamType);
-            AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(usage)
-                    .setContentType(contentType)
-                    .build();
+            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setUsage(usage)
+                .setContentType(contentType)
+                .build();
             player.setAudioAttributes(audioAttributes, false);
             AudioManager audioManager = (AudioManager) themedReactContext.getSystemService(Context.AUDIO_SERVICE);
             boolean isSpeakerOutput = output == AudioOutput.SPEAKER;
-            audioManager.setMode(
-                    isSpeakerOutput ? AudioManager.MODE_NORMAL
-                            : AudioManager.MODE_IN_COMMUNICATION);
+            audioManager.setMode(isSpeakerOutput ? AudioManager.MODE_NORMAL : AudioManager.MODE_IN_COMMUNICATION);
+            audioManager.setSpeakerphoneOn(isSpeakerOutput);
+        }
+
+        if (mediaPlayer != null) {
+            int streamType = output.getStreamType();
+            android.media.AudioAttributes audioAttributes = new android.media.AudioAttributes.Builder()
+                .setUsage((int) Util.getAudioUsageForStreamType(streamType))
+                .setContentType((int) Util.getAudioContentTypeForStreamType(streamType))
+                .build();
+            mediaPlayer.setAudioAttributes(audioAttributes);
+            AudioManager audioManager = (AudioManager) themedReactContext.getSystemService(Context.AUDIO_SERVICE);
+            boolean isSpeakerOutput = output == AudioOutput.SPEAKER;
+            audioManager.setMode(isSpeakerOutput ? AudioManager.MODE_NORMAL : AudioManager.MODE_IN_COMMUNICATION);
             audioManager.setSpeakerphoneOn(isSpeakerOutput);
         }
     }
@@ -2196,12 +2490,25 @@ public class ReactExoplayerView extends FrameLayout implements
 
     public void setVolumeModifier(float volume) {
         audioVolume = volume;
+
         if (player != null) {
             player.setVolume(audioVolume);
+        }
+
+        if (mediaPlayer != null) {
+            mediaPlayer.setVolume(audioVolume, audioVolume);
         }
     }
 
     public void seekTo(long positionMs) {
+        if (isMediaPlayerValid()) {
+            if (Util.SDK_INT >= 26) {
+                mediaPlayer.seekTo(positionMs, SEEK_PREVIOUS_SYNC);
+            } else {
+                mediaPlayer.seekTo((int) positionMs);
+            }
+        }
+
         if (player != null) {
             player.seekTo(positionMs);
         }
@@ -2460,5 +2767,228 @@ public class ReactExoplayerView extends FrameLayout implements
     public void setControlsStyles(ControlsConfig controlsStyles) {
         controlsConfig = controlsStyles;
         refreshProgressBarVisibility();
+    }
+
+    public class MediaPlayerListener implements MediaPlayer.OnPreparedListener,
+            MediaPlayer.OnErrorListener,
+            MediaPlayer.OnSeekCompleteListener,
+            MediaPlayer.OnBufferingUpdateListener,
+            MediaPlayer.OnCompletionListener,
+            MediaPlayer.OnInfoListener {
+
+        @Override
+        public void onBufferingUpdate(MediaPlayer mp, int percent) {
+            mediaPlayerBuffered = Math.round((double) (mediaPlayer.getDuration() * percent) / 100.0);
+        }
+
+        @Override
+        public void onCompletion(MediaPlayer mp) {
+            updateProgress();
+            clearProgressMessageHandler();
+            eventEmitter.end();
+            onStopPlayback();
+            setKeepScreenOn(false);
+        }
+
+        @Override
+        public boolean onError(MediaPlayer mp, int what, int extra) {
+            eventEmitter.error("MediaPlayer error", new Exception(getErrorMessage(extra)), String.valueOf(extra));
+            return true;
+        }
+
+        @Override
+        public boolean onInfo(MediaPlayer mp, int what, int extra) {
+            switch (what) {
+                case MediaPlayer.MEDIA_INFO_BUFFERING_START:
+                    onBuffering(true);
+                    clearProgressMessageHandler();
+                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+                    break;
+                case MediaPlayer.MEDIA_INFO_BUFFERING_END:
+                    onBuffering(false);
+                    break;
+                case MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START:
+                    eventEmitter.ready();
+                    onBuffering(false);
+                    clearProgressMessageHandler(); // ensure there is no other message
+                    startProgressHandler();
+                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+                    setHideShutterView(true);
+                    break;
+                default:
+            }
+
+            return false;
+        }
+
+        @Override
+        public void onPrepared(MediaPlayer mp) {
+            mediaPlayerValid = true;
+
+            if (loadVideoStarted) {
+                loadVideoStarted = false;
+
+                try {
+                    MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
+
+                    ArrayList<Track> audioTracks = new ArrayList<>();
+                    ArrayList<Track> textTracks = new ArrayList<>();
+                    ArrayList<VideoTrack> videoTracks = new ArrayList<>();
+
+                    for (int i = 0; i < tracks.length; ++i) {
+                        MediaPlayer.TrackInfo track = tracks[i];
+                        MediaFormat format = track.getFormat();
+                        int trackType = track.getTrackType();
+                        boolean selected = mediaPlayer.getSelectedTrack(trackType) == i;
+
+                        if (format != null) {
+                            switch (trackType) {
+                                case MEDIA_TRACK_TYPE_AUDIO:
+                                    if (isMediaFormatSupported(format, MEDIA_TRACK_TYPE_AUDIO)) {
+                                        Track audioTrack = mediaPlayerTrackToGenericTrack(format, i, selected);
+                                        audioTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
+                                        audioTracks.add(audioTrack);
+                                    }
+
+                                    break;
+                                case MEDIA_TRACK_TYPE_SUBTITLE:
+                                    Track textTrack = mediaPlayerTrackToGenericTrack(format, i, selected);
+                                    textTracks.add(textTrack);
+                                    break;
+                                case MEDIA_TRACK_TYPE_VIDEO:
+                                    if (isMediaFormatSupported(format, MEDIA_TRACK_TYPE_VIDEO)) {
+                                        VideoTrack videoTrack = mediaPlayerTrackToGenericVideoTrack(format, i, selected);
+                                        videoTracks.add(videoTrack);
+                                    }
+                                default:
+                                    break;
+                            }
+                        }
+                    }
+
+                    eventEmitter.load(
+                        mediaPlayer.getDuration(),
+                        mediaPlayer.getCurrentPosition(),
+                        mediaPlayer.getVideoWidth(),
+                        mediaPlayer.getVideoHeight(),
+                        audioTracks,
+                        textTracks,
+                        videoTracks,
+                        String.valueOf(mediaPlayer.getSelectedTrack(MEDIA_TRACK_TYPE_VIDEO))
+                    );
+
+                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+                } catch (IllegalStateException e) {
+                    eventEmitter.error("MediaPlayer onLoad error.", e);
+                }
+            }
+        }
+
+        @Override
+        public void onSeekComplete(MediaPlayer mp) {
+            eventEmitter.seek(mp.getCurrentPosition(), mp.getCurrentPosition() % 1000);
+        }
+
+        private String getErrorMessage(int code) {
+            switch (code) {
+                case MEDIA_ERROR_IO:
+                    return "File or network related operation error";
+                case MEDIA_ERROR_MALFORMED:
+                    return "Bitstream is not conforming to the related coding standard or file spec";
+                case MEDIA_ERROR_UNSUPPORTED:
+                    return "Bitstream is conforming to the related coding standard or file spec, but the media framework does not support the feature";
+                case MEDIA_ERROR_TIMED_OUT:
+                    return "Some operation takes too long to complete, usually more than 3-5 seconds";
+                default:
+                    return "Unspecified low-level system error";
+            }
+        }
+    }
+
+    private boolean isMediaFormatSupported(MediaFormat format, int trackType) {
+        if (MEDIA_TRACK_TYPE_SUBTITLE == trackType) {
+            return true;
+        }
+
+        String mimeType = format.getString(KEY_MIME);
+
+        if (null == mimeType) {
+            // Failed to get mimeType - assume it is supported
+            return true;
+        }
+
+        boolean isSupported;
+        boolean isHardwareSupported = false;
+        boolean isSoftwareSupported = false;
+
+        try {
+            for (MediaCodecInfo codecInfo : MediaCodecUtil.getDecoderInfos(mimeType, false, false)) {
+                if (!codecInfo.mimeType.equals(mimeType)) {
+                    continue;
+                }
+
+                if (MEDIA_TRACK_TYPE_VIDEO == trackType) {
+                    int width = format.getInteger(KEY_WIDTH);
+                    int height = format.getInteger(KEY_HEIGHT);
+                    float frameRate = format.getFloat(KEY_FRAME_RATE);
+
+                    if (width > 0 || height > 0 || frameRate > 0.0) {
+                        if (!codecInfo.isVideoSizeAndRateSupportedV21(width, height, frameRate)) {
+                            continue;
+                        }
+                    }
+                }
+
+                if (MEDIA_TRACK_TYPE_AUDIO == trackType) {
+                    int sampleRate = format.getInteger(KEY_SAMPLE_RATE);
+
+                    if (sampleRate > 0) {
+                        if (!codecInfo.isAudioSampleRateSupportedV21(sampleRate)) {
+                            continue;
+                        }
+                    }
+                }
+
+                if (codecInfo.capabilities.isFormatSupported(format)) {
+                    if (codecInfo.hardwareAccelerated) {
+                        isHardwareSupported = true;
+                    }
+
+                    if (codecInfo.softwareOnly) {
+                        isSoftwareSupported = true;
+                    }
+                }
+            }
+
+            isSupported = isHardwareSupported || isSoftwareSupported;
+        } catch (Exception e) {
+            // Failed to get decoder info - assume it is supported
+            isSupported = true;
+        }
+
+        return isSupported;
+    }
+
+    private Track mediaPlayerTrackToGenericTrack(MediaFormat format, int trackIndex, boolean selected) {
+        Track track = new Track();
+        track.setIndex(trackIndex);
+        track.setSelected(selected);
+
+        if (format.getString(KEY_MIME) != null) track.setMimeType(format.getString(KEY_MIME));
+
+        if (format.getString(KEY_LANGUAGE) != null) track.setLanguage(format.getString(KEY_LANGUAGE));
+
+        return track;
+    }
+
+    private VideoTrack mediaPlayerTrackToGenericVideoTrack(MediaFormat format, int trackIndex, boolean selected) {
+        VideoTrack videoTrack = new VideoTrack();
+        videoTrack.setWidth(format.getInteger(KEY_WIDTH));
+        videoTrack.setHeight(format.getInteger(KEY_HEIGHT));
+        videoTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
+        videoTrack.setTrackId(String.valueOf(trackIndex));
+        videoTrack.setIndex(trackIndex);
+
+        return videoTrack;
     }
 }

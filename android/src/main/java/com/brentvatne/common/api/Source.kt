@@ -68,6 +68,18 @@ class Source {
     /** return true if this and src are equals  */
     fun isEquals(source: Source): Boolean = this == source
 
+    fun isUdp(): Boolean = schemeEquals("udp");
+
+    fun isRtp(): Boolean = schemeEquals("rtp");
+
+    private fun schemeEquals(scheme: String): Boolean {
+        return try {
+            checkNotNull(uri).scheme?.lowercase(Locale.getDefault()) == scheme;
+        } catch (e: Exception) {
+            false;
+        }
+    }
+
     /** Metadata to display in notification */
     class Metadata {
         /** Metadata title */
@@ -212,6 +224,8 @@ class Source {
                     lowerCaseUri == "content" ||
                     lowerCaseUri == "file" ||
                     lowerCaseUri == "rtsp" ||
+                    lowerCaseUri == "udp" ||
+                    lowerCaseUri == "rtp" ||
                     lowerCaseUri == "asset"
                 )
         }

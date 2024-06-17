@@ -15,9 +15,11 @@ import androidx.media3.common.util.Assertions;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.SubtitleView;
 
+import android.media.MediaPlayer;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
@@ -38,6 +40,7 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
     private final AspectRatioFrameLayout layout;
     private final ComponentListener componentListener;
     private ExoPlayer player;
+    private MediaPlayer mediaPlayer;
     private final Context context;
     private final ViewGroup.LayoutParams layoutParams;
     private final FrameLayout adOverlayFrameLayout;
@@ -108,12 +111,40 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
         }
     }
 
+    private void setSurface() {
+        if (surfaceView instanceof SurfaceView) {
+            SurfaceHolder surfaceHolder = ((SurfaceView) surfaceView).getHolder();
+            surfaceHolder.addCallback(new SurfaceHolder.Callback() {
+                @Override
+                public void surfaceCreated(@NonNull SurfaceHolder surfaceHolder) {
+                    mediaPlayer.setDisplay(surfaceHolder);
+                }
+
+                @Override
+                public void surfaceChanged(@NonNull SurfaceHolder surfaceHolder, int i, int i1, int i2) {
+
+                }
+
+                @Override
+                public void surfaceDestroyed(@NonNull SurfaceHolder surfaceHolder) {
+
+                }
+            });
+        } else {
+            throw new IllegalStateException("Media Player needs SurfaceView");
+        }
+    }
+
     public boolean isPlaying() {
+        if (mediaPlayer != null) {
+            return mediaPlayer.isPlaying();
+        }
+
         return player != null && player.isPlaying();
     }
 
     public void setSubtitleStyle(SubtitleStyle style) {
-        // ensure we reset subtile style before reapplying it
+        // ensure we reset subtitle style before reapplying it
         subtitleLayout.setUserDefaultStyle();
         subtitleLayout.setUserDefaultTextSize();
 
@@ -138,6 +169,7 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
         View view;
         if (!useTextureView || useSecureView) {
             view = new SurfaceView(context);
+
             if (useSecureView) {
                 ((SurfaceView)view).setSecure(true);
             }
@@ -156,6 +188,10 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
 
         if (this.player != null) {
             setVideoView();
+        }
+
+        if (this.mediaPlayer != null) {
+            setSurface();
         }
     }
 
@@ -192,10 +228,24 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
             clearVideoView();
         }
         this.player = player;
-        shutterView.setVisibility(this.hideShutterView ? View.INVISIBLE : View.VISIBLE);
+        updateShutterViewVisibility();
+
         if (player != null) {
             setVideoView();
             player.addListener(componentListener);
+        }
+    }
+
+    public void setMediaPlayer(MediaPlayer mediaPlayer) {
+        if (this.mediaPlayer == mediaPlayer) {
+            return;
+        }
+
+        this.mediaPlayer = mediaPlayer;
+        updateShutterViewVisibility();
+
+        if (mediaPlayer != null) {
+            setSurface();
         }
     }
 
@@ -253,7 +303,7 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
             }
         }
         // no video tracks, in that case refresh shutterView visibility
-        shutterView.setVisibility(this.hideShutterView ? View.INVISIBLE : View.VISIBLE);
+        updateShutterViewVisibility();
     }
 
     public void invalidateAspectRatio() {
