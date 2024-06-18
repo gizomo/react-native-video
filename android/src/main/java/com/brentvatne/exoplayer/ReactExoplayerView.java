@@ -3,7 +3,6 @@ package com.brentvatne.exoplayer;
 import static android.media.MediaFormat.KEY_BIT_RATE;
 import static android.media.MediaFormat.KEY_FRAME_RATE;
 import static android.media.MediaFormat.KEY_HEIGHT;
-import static android.media.MediaFormat.KEY_LANGUAGE;
 import static android.media.MediaFormat.KEY_MIME;
 import static android.media.MediaFormat.KEY_SAMPLE_RATE;
 import static android.media.MediaFormat.KEY_WIDTH;
@@ -767,39 +766,15 @@ public class ReactExoplayerView extends FrameLayout implements
     }
 
     private void initializeMediaPlayer(ReactExoplayerView self) {
-        if (mediaPlayer == null) {
-            mediaPlayer = new MediaPlayer();
-            exoPlayerView.setMediaPlayer(mediaPlayer);
-        }
-
-        exoPlayerView.invalidateAspectRatio();
-        reLayout(exoPlayerView);
-
-        try {
-            mediaPlayer.setDataSource(self.getContext(), self.source.getUri());
-        } catch (Exception ex) {
-            playerNeedsSource = true;
-            DebugLog.e(TAG, "Failed to set DataSource for MediaPlayer!");
-            DebugLog.e(TAG, ex.toString());
-            ex.printStackTrace();
-            eventEmitter.error(ex.toString(), ex, "1001");
-            return;
+        if (mediaPlayer != null) {
+            mediaPlayer.release();
         }
 
         float volume = muted ? 0.f : audioVolume * 1;
-        mediaPlayer.setVolume(volume, volume);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PlaybackParams playbackParams = new PlaybackParams();
-            playbackParams.setSpeed(rate);
-            playbackParams.setPitch(1f);
-            mediaPlayer.setPlaybackParams(playbackParams);
-        }
-
-        changeAudioOutput(this.audioOutput);
-
         MediaPlayerListener listener = new MediaPlayerListener();
 
+        mediaPlayer = new MediaPlayer();
+        mediaPlayer.setVolume(volume, volume);
         mediaPlayer.setOnErrorListener(listener);
         mediaPlayer.setOnPreparedListener(listener);
         mediaPlayer.setOnBufferingUpdateListener(listener);
@@ -807,10 +782,44 @@ public class ReactExoplayerView extends FrameLayout implements
         mediaPlayer.setOnCompletionListener(listener);
         mediaPlayer.setOnInfoListener(listener);
 
-        loadVideoStarted = true;
+        changeAudioOutput(this.audioOutput);
 
-        mediaPlayer.prepareAsync();
-        eventEmitter.loadStart();
+        exoPlayerView.setMediaPlayer(mediaPlayer);
+        exoPlayerView.invalidateAspectRatio();
+        reLayout(exoPlayerView);
+
+        mediaPlayer.setScreenOnWhilePlaying(preventsDisplaySleepDuringVideoPlayback);
+
+        final MediaPlayer currentPlayer = mediaPlayer;
+
+        new Thread(() -> {
+            try {
+                currentPlayer.setDataSource(self.getContext(), self.source.getUri());
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    PlaybackParams playbackParams = new PlaybackParams();
+                    playbackParams.setSpeed(rate);
+                    playbackParams.setPitch(1f);
+                    currentPlayer.setPlaybackParams(playbackParams);
+                }
+
+                if (mediaPlayer != currentPlayer) {
+                    currentPlayer.release();
+                    return;
+                }
+
+                mediaPlayer.prepareAsync();
+
+                loadVideoStarted = true;
+                eventEmitter.loadStart();
+            } catch (Exception ex) {
+                playerNeedsSource = true;
+                DebugLog.e(TAG, "Failed to set DataSource for MediaPlayer!");
+                DebugLog.e(TAG, ex.toString());
+                ex.printStackTrace();
+                eventEmitter.error(ex.toString(), ex, "1001");
+            }
+        }).start();
     }
 
     private void initializePlayerCore(ReactExoplayerView self) {
