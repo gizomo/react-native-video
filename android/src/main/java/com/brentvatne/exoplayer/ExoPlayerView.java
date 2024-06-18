@@ -295,10 +295,10 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
         for (Tracks.Group group: groups) {
             if (group.getType() == C.TRACK_TYPE_VIDEO && group.length > 0) {
                 // get the first track of the group to identify aspect ratio
-                Format format = group.getTrackFormat(0);
+                // Format format = group.getTrackFormat(0);
 
                 // update aspect ratio !
-                layout.setAspectRatio(format.height == 0 ? 1 : (format.width * format.pixelWidthHeightRatio) / format.height);
+                // layout.setAspectRatio(format.height == 0 ? 1 : (format.width * format.pixelWidthHeightRatio) / format.height);
                 return;
             }
         }
