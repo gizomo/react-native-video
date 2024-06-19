@@ -73,7 +73,7 @@ class RCTVideoManager: RCTViewManager {
     }
 
     @objc(setPlayerPauseState:reactTag:resolver:rejecter:)
-    func setPlayerPauseState(paused: NSNumber, reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) -> Void {
+    func setPlayerPauseState(paused: NSNumber, reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         performOnVideoView(withReactTag: reactTag, callback: { videoView in
             videoView?.setPaused(paused.boolValue)
             resolve(nil)
@@ -81,12 +81,11 @@ class RCTVideoManager: RCTViewManager {
     }
 
     @objc(isPlayerPaused:resolver:rejecter:)
-    func isPlayerPaused(reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) -> Void {
+    func isPlayerPaused(reactTag: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         performOnVideoView(withReactTag: reactTag, callback: { videoView in
             resolve(videoView?.isPaused())
         })
     }
-
 
     @objc(setVolume:reactTag:)
     func setVolume(value: Float, reactTag: NSNumber) {
