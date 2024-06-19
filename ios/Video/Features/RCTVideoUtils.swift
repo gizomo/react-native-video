@@ -204,6 +204,13 @@ enum RCTVideoUtils {
         return urlComponents?.url
     }
 
+    static func hasM3U8Extension(string: String) -> Bool {
+        let url = URL(string: string)!
+        let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+
+        return urlComponents.path.hasSuffix(".m3u8")
+    }
+
     static func extractDataFromCustomSchemeUrl(from url: URL, scheme: String) -> Data? {
         guard url.scheme == scheme,
               let adoptURL = RCTVideoUtils.replaceURLScheme(url: url, scheme: nil) else { return nil }
