@@ -1,19 +1,5 @@
 package com.brentvatne.exoplayer;
 
-import static android.media.MediaFormat.KEY_BIT_RATE;
-import static android.media.MediaFormat.KEY_FRAME_RATE;
-import static android.media.MediaFormat.KEY_HEIGHT;
-import static android.media.MediaFormat.KEY_MIME;
-import static android.media.MediaFormat.KEY_SAMPLE_RATE;
-import static android.media.MediaFormat.KEY_WIDTH;
-import static android.media.MediaPlayer.MEDIA_ERROR_IO;
-import static android.media.MediaPlayer.MEDIA_ERROR_MALFORMED;
-import static android.media.MediaPlayer.MEDIA_ERROR_TIMED_OUT;
-import static android.media.MediaPlayer.MEDIA_ERROR_UNSUPPORTED;
-import static android.media.MediaPlayer.SEEK_PREVIOUS_SYNC;
-import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO;
-import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE;
-import static android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_VIDEO;
 import static androidx.media3.common.C.CONTENT_TYPE_DASH;
 import static androidx.media3.common.C.CONTENT_TYPE_HLS;
 import static androidx.media3.common.C.CONTENT_TYPE_OTHER;
@@ -31,9 +17,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.media.AudioManager;
-import android.media.MediaFormat;
-import android.media.MediaPlayer;
-import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -51,6 +34,7 @@ import android.widget.TextView;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -150,6 +134,11 @@ import com.google.ads.interactivemedia.v3.api.AdEvent;
 import com.google.ads.interactivemedia.v3.api.AdErrorEvent;
 import com.google.common.collect.ImmutableList;
 
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.MediaPlayer;
+import org.videolan.libvlc.interfaces.IMedia;
+
 import java.net.CookieHandler;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
@@ -202,6 +191,7 @@ public class ReactExoplayerView extends FrameLayout implements
     private DataSource.Factory mediaDataSourceFactory;
     private ExoPlayer player;
     private MediaPlayer mediaPlayer;
+    private LibVLC libVLC;
     private boolean mediaPlayerValid = false;
     private DefaultTrackSelector trackSelector;
     private boolean playerNeedsSource;
@@ -302,8 +292,8 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         if (mediaPlayer != null) {
-            long duration = mediaPlayer.getDuration();
-            long pos = mediaPlayer.getCurrentPosition();
+            long duration = mediaPlayer.getLength();
+            long pos = mediaPlayer.getTime();
 
             if (pos > duration) {
                 pos = duration;
@@ -752,7 +742,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
     public void getCurrentPosition(Promise promise) {
         if (isMediaPlayerValid()) {
-            double currentPosition = mediaPlayer.getCurrentPosition() / 1000;
+            double currentPosition = mediaPlayer.getTime() / 1000;
             promise.resolve(currentPosition);
             return;
         }
@@ -768,19 +758,17 @@ public class ReactExoplayerView extends FrameLayout implements
     private void initializeMediaPlayer(ReactExoplayerView self) {
         if (mediaPlayer != null) {
             mediaPlayer.release();
+            libVLC.release();
         }
 
-        float volume = muted ? 0.f : audioVolume * 1;
-        MediaPlayerListener listener = new MediaPlayerListener();
+        final ArrayList<String> options = new ArrayList<String>();
+        options.add("--aout=android_audiotrack");
+        options.add("--audio-filter=normvol");
+        options.add("--norm-max-level=3.000000");
 
-        mediaPlayer = new MediaPlayer();
-        mediaPlayer.setVolume(volume, volume);
-        mediaPlayer.setOnErrorListener(listener);
-        mediaPlayer.setOnPreparedListener(listener);
-        mediaPlayer.setOnBufferingUpdateListener(listener);
-        mediaPlayer.setOnSeekCompleteListener(listener);
-        mediaPlayer.setOnCompletionListener(listener);
-        mediaPlayer.setOnInfoListener(listener);
+        libVLC = new LibVLC(self.getContext(), options);
+        mediaPlayer = new MediaPlayer(libVLC);
+        mediaPlayer.setEventListener(vlcEventHandler);
 
         changeAudioOutput(this.audioOutput);
 
@@ -788,33 +776,30 @@ public class ReactExoplayerView extends FrameLayout implements
         exoPlayerView.invalidateAspectRatio();
         reLayout(exoPlayerView);
 
-        mediaPlayer.setScreenOnWhilePlaying(preventsDisplaySleepDuringVideoPlayback);
-
         final MediaPlayer currentPlayer = mediaPlayer;
 
         new Thread(() -> {
             try {
-                currentPlayer.setDataSource(self.getContext(), self.source.getUri());
+                String url = self.source.getUri().toString();
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    PlaybackParams playbackParams = new PlaybackParams();
-                    playbackParams.setSpeed(rate);
-                    playbackParams.setPitch(1f);
-                    currentPlayer.setPlaybackParams(playbackParams);
+                if (!url.contains("@")) {
+                    String target = source.isUdp() ? "udp://" : "rtp://";
+                    url = url.replace(target, target + "@");
                 }
+
+                Media media = new Media(libVLC, Uri.parse(url));
+                media.setHWDecoderEnabled(true, false);
 
                 if (mediaPlayer != currentPlayer) {
                     currentPlayer.release();
                     return;
                 }
 
-                mediaPlayer.prepareAsync();
-
-                loadVideoStarted = true;
-                eventEmitter.loadStart();
+                mediaPlayer.setMedia(media);
+                mediaPlayer.play();
             } catch (Exception ex) {
                 playerNeedsSource = true;
-                DebugLog.e(TAG, "Failed to set DataSource for MediaPlayer!");
+                DebugLog.e(TAG, "Failed to set DataSource for VLCPlayer!");
                 DebugLog.e(TAG, ex.toString());
                 ex.printStackTrace();
                 eventEmitter.error(ex.toString(), ex, "1001");
@@ -1253,9 +1238,10 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         if (mediaPlayer != null) {
-            mediaPlayer.reset();
             mediaPlayer.release();
+            libVLC.release();
             mediaPlayer = null;
+            libVLC = null;
         }
 
         if (adsLoader != null) {
@@ -1353,7 +1339,7 @@ public class ReactExoplayerView extends FrameLayout implements
 
     private void resumePlayback() {
         if (isMediaPlayerValid()) {
-            mediaPlayer.start();
+            mediaPlayer.play();
             setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
 
             return;
@@ -1976,155 +1962,125 @@ public class ReactExoplayerView extends FrameLayout implements
         trackSelector.setParameters(disableParameters);
     }
 
-    public void disableMediaTrack(int index) {
-        mediaPlayer.deselectTrack(index);
-    }
-
     public void setSelectedMediaTrack(int trackType, String type, String value) {
         if (TextUtils.isEmpty(type)) {
             type = "default";
         }
 
         if ("disabled".equals(type)) {
-            if (trackType == MEDIA_TRACK_TYPE_SUBTITLE) {
-                disableMediaTrack(Integer.parseInt(value));
+            if (trackType == IMedia.Track.Type.Text) {
+                mediaPlayer.unselectTrackType(trackType);
             }
         } else if ("language".equals(type)) {
-            MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
+            IMedia.Track[] tracks = mediaPlayer.getTracks(trackType);
 
-            for (int i = 0; i < tracks.length; ++i) {
-                MediaPlayer.TrackInfo track = tracks[i];
-
-                if (track.getTrackType() != trackType) {
-                    continue;
-                }
-
-                if (track.getLanguage().equals(value)) {
-                    mediaPlayer.selectTrack(i);
-                    return;
+            if (tracks != null) {
+                for (IMedia.Track track : tracks) {
+                    if (Objects.equals(track.language, value)) {
+                        mediaPlayer.selectTrack(track.id);
+                        return;
+                    }
                 }
             }
         } else if ("index".equals(type)) {
-            mediaPlayer.selectTrack(Integer.parseInt(value));
+            IMedia.Track[] tracks = mediaPlayer.getTracks(trackType);
+
+            if (tracks != null) {
+                IMedia.Track track = tracks[Integer.parseInt(value)];
+
+                if (track != null) {
+                    mediaPlayer.selectTrack(track.id);
+                }
+            }
         } else if ("resolution".equals(type)) {
             int height = Integer.parseInt(value);
-            MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
-            MediaFormat closestFormat = null;
-            int exactMatchedIndex = C.INDEX_UNSET;
-            int closestFormatIndex = C.INDEX_UNSET;
 
-            for (int i = 0; i < tracks.length; ++i) {
-                MediaPlayer.TrackInfo track = tracks[i];
+            IMedia.VideoTrack[] tracks = (IMedia.VideoTrack[]) mediaPlayer.getTracks(trackType);
+            IMedia.VideoTrack exactMatchedTrack = null;
+            IMedia.VideoTrack closestTrack = null;
 
-                if (track.getTrackType() != trackType) {
-                    continue;
-                }
+            if (tracks == null) {
+                return;
+            }
 
-                MediaFormat format = track.getFormat();
-
-                if (format == null) {
-                    continue;
-                }
-
-                if (format.getInteger(KEY_HEIGHT) == height) {
-                    exactMatchedIndex = i;
+            for (IMedia.VideoTrack track : tracks) {
+                if (track.height == height) {
+                    exactMatchedTrack = track;
                     break;
                 } else {
                     // When using content resolution rather than ads, we need to try and find the closest match if there is no exact match
-                    if (closestFormat != null) {
-                        if ((format.getInteger(KEY_BIT_RATE) > closestFormat.getInteger(KEY_BIT_RATE)
-                                || format.getInteger(KEY_HEIGHT) > closestFormat.getInteger(KEY_HEIGHT))
-                                && format.getInteger(KEY_HEIGHT) < height) {
+                    if (closestTrack != null) {
+                        if ((track.bitrate > closestTrack.bitrate || track.height > closestTrack.height) && track.height < height) {
                             // Higher quality match
-                            closestFormat = format;
-                            closestFormatIndex = i;
+                            closestTrack = track;
                         }
-                    } else if(format.getInteger(KEY_HEIGHT) < height) {
-                        closestFormat = format;
-                        closestFormatIndex = i;
+                    } else if (track.height < height) {
+                        closestTrack = track;
                     }
                 }
             }
 
-            if (exactMatchedIndex != C.INDEX_UNSET) {
-                mediaPlayer.selectTrack(exactMatchedIndex);
+            if (exactMatchedTrack != null) {
+                mediaPlayer.selectTrack(exactMatchedTrack.id);
                 return;
             }
 
             // Selecting the closest match found
-            if (C.INDEX_UNSET != closestFormatIndex) {
-                mediaPlayer.selectTrack(closestFormatIndex);
+            if (closestTrack != null) {
+                mediaPlayer.selectTrack(closestTrack.id);
             } else {
                 // No close match found - so we pick the lowest quality
                 int minHeight = Integer.MAX_VALUE;
-                int minIndex = C.INDEX_UNSET;
+                IMedia.VideoTrack trackWithMinHeight = null;
 
-                for (int j = 0; j < tracks.length; j++) {
-                    MediaPlayer.TrackInfo track = tracks[j];
-
-                    if (track.getTrackType() != trackType) {
-                        continue;
-                    }
-
-                    MediaFormat format = track.getFormat();
-
-                    if (format == null || !isMediaFormatSupported(format, C.TRACK_TYPE_VIDEO)) {
-                        continue;
-                    }
-
-                    if (format.getInteger(KEY_HEIGHT) < minHeight) {
-                        minHeight = format.getInteger(KEY_HEIGHT);
-                        minIndex = j;
+                for (IMedia.VideoTrack track : tracks) {
+                    if (track.height < minHeight) {
+                        minHeight = track.height;
+                        trackWithMinHeight = track;
                     }
                 }
 
-                if (minHeight != C.INDEX_UNSET) {
-                    mediaPlayer.selectTrack(minIndex);
+                if (minHeight != C.INDEX_UNSET && trackWithMinHeight != null) {
+                    mediaPlayer.selectTrack(trackWithMinHeight.id);
                 }
             }
-        } else if (trackType == MEDIA_TRACK_TYPE_SUBTITLE && Util.SDK_INT > 18) { // Text default
+        } else if (trackType == IMedia.Track.Type.Text && Util.SDK_INT > 18) { // Text default
             // Use system settings if possible
             CaptioningManager captioningManager = (CaptioningManager)themedReactContext.getSystemService(Context.CAPTIONING_SERVICE);
             if (captioningManager != null && captioningManager.isEnabled()) {
-                int index = getMediaTrackIndexForDefaultLocale(trackType);
+                String id = getVlcTrackIdForDefaultLocale(trackType);
 
-                if (index != C.INDEX_UNSET) {
-                    mediaPlayer.selectTrack(index);
+                if (id != null) {
+                    mediaPlayer.selectTrack(id);
                 }
             }
         } else if (trackType == C.TRACK_TYPE_AUDIO) { // Audio default
-            int index = getMediaTrackIndexForDefaultLocale(trackType);
-            mediaPlayer.selectTrack(index != C.INDEX_UNSET ? index : 0);
+            String id = getVlcTrackIdForDefaultLocale(trackType);
+
+            if (id != null) {
+                mediaPlayer.selectTrack(id);
+            }
         }
     }
 
-    private int getMediaTrackIndexForDefaultLocale(int trackType) {
-        int index = C.INDEX_UNSET;
+    @Nullable
+    private String getVlcTrackIdForDefaultLocale(int trackType) {
+        String id = null;
         String locale2 = Locale.getDefault().getLanguage(); // 2 letter code
         String locale3 = Locale.getDefault().getISO3Language(); // 3 letter code
-        MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
 
-        for (int i = 0; i < tracks.length; ++i) {
-            MediaPlayer.TrackInfo track = tracks[i];
-            String language = track.getLanguage();
+        IMedia.Track[] tracks = mediaPlayer.getTracks(trackType);
 
-            if (track.getTrackType() != trackType) {
-                continue;
-            }
-
-            MediaFormat format = track.getFormat();
-
-            if (trackType == MEDIA_TRACK_TYPE_AUDIO && format != null && !isMediaFormatSupported(format, trackType)) {
-                continue;
-            }
-
-            if (language != null && (language.equals(locale2) || language.equals(locale3))) {
-                index = i;
-                break;
+        if (tracks != null) {
+            for (IMedia.Track track : tracks) {
+                if (track.language != null && (track.language.equals(locale2) || track.language.equals(locale3))) {
+                    id = track.id;
+                    break;
+                }
             }
         }
 
-        return index;
+        return id;
     }
 
     public void setSelectedTrack(int trackType, String type, String value) {
@@ -2392,7 +2348,7 @@ public class ReactExoplayerView extends FrameLayout implements
         videoTrackValue = value;
 
         if (mediaPlayer != null) {
-            if (!loadVideoStarted) setSelectedMediaTrack(MEDIA_TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
+            if (!loadVideoStarted) setSelectedMediaTrack(IMedia.Track.Type.Video, videoTrackType, videoTrackValue);
         } else {
             if (!loadVideoStarted) setSelectedTrack(C.TRACK_TYPE_VIDEO, videoTrackType, videoTrackValue);
         }
@@ -2403,7 +2359,7 @@ public class ReactExoplayerView extends FrameLayout implements
         audioTrackValue = value;
 
         if (mediaPlayer != null) {
-            setSelectedMediaTrack(MEDIA_TRACK_TYPE_AUDIO, audioTrackType, audioTrackValue);
+            setSelectedMediaTrack(IMedia.Track.Type.Audio, audioTrackType, audioTrackValue);
         } else {
             setSelectedTrack(C.TRACK_TYPE_AUDIO, audioTrackType, audioTrackValue);
         }
@@ -2414,7 +2370,7 @@ public class ReactExoplayerView extends FrameLayout implements
         textTrackValue = value;
 
         if (mediaPlayer != null) {
-            setSelectedMediaTrack(MEDIA_TRACK_TYPE_SUBTITLE, textTrackType, textTrackValue);
+            setSelectedMediaTrack(IMedia.Track.Type.Text, textTrackType, textTrackValue);
         } else {
             setSelectedTrack(C.TRACK_TYPE_TEXT, textTrackType, textTrackValue);
         }
@@ -2459,8 +2415,7 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         if (mediaPlayer != null) {
-            float volume = muted ? 0.f : audioVolume;
-            mediaPlayer.setVolume(volume, volume);
+            mediaPlayer.setVolume((int) (muted ? 0.f : audioVolume) * 100);
         }
     }
 
@@ -2481,12 +2436,6 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         if (mediaPlayer != null) {
-            int streamType = output.getStreamType();
-            android.media.AudioAttributes audioAttributes = new android.media.AudioAttributes.Builder()
-                .setUsage((int) Util.getAudioUsageForStreamType(streamType))
-                .setContentType((int) Util.getAudioContentTypeForStreamType(streamType))
-                .build();
-            mediaPlayer.setAudioAttributes(audioAttributes);
             AudioManager audioManager = (AudioManager) themedReactContext.getSystemService(Context.AUDIO_SERVICE);
             boolean isSpeakerOutput = output == AudioOutput.SPEAKER;
             audioManager.setMode(isSpeakerOutput ? AudioManager.MODE_NORMAL : AudioManager.MODE_IN_COMMUNICATION);
@@ -2509,17 +2458,14 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         if (mediaPlayer != null) {
-            mediaPlayer.setVolume(audioVolume, audioVolume);
+            mediaPlayer.setVolume((int) audioVolume * 100);
         }
     }
 
     public void seekTo(long positionMs) {
         if (isMediaPlayerValid()) {
-            if (Util.SDK_INT >= 26) {
-                mediaPlayer.seekTo(positionMs, SEEK_PREVIOUS_SYNC);
-            } else {
-                mediaPlayer.seekTo((int) positionMs);
-            }
+            mediaPlayer.setTime(positionMs);
+            eventEmitter.seek(mediaPlayer.getTime(), positionMs);
         }
 
         if (player != null) {
@@ -2782,244 +2728,139 @@ public class ReactExoplayerView extends FrameLayout implements
         refreshProgressBarVisibility();
     }
 
-    public class MediaPlayerListener implements MediaPlayer.OnPreparedListener,
-            MediaPlayer.OnErrorListener,
-            MediaPlayer.OnSeekCompleteListener,
-            MediaPlayer.OnBufferingUpdateListener,
-            MediaPlayer.OnCompletionListener,
-            MediaPlayer.OnInfoListener {
-
-        @Override
-        public void onBufferingUpdate(MediaPlayer mp, int percent) {
-            mediaPlayerBuffered = Math.round((double) (mediaPlayer.getDuration() * percent) / 100.0);
-        }
-
-        @Override
-        public void onCompletion(MediaPlayer mp) {
-            updateProgress();
-            clearProgressMessageHandler();
-            eventEmitter.end();
-            onStopPlayback();
-            setKeepScreenOn(false);
-        }
-
-        @Override
-        public boolean onError(MediaPlayer mp, int what, int extra) {
-            eventEmitter.error("MediaPlayer error", new Exception(getErrorMessage(extra)), String.valueOf(extra));
-            return true;
-        }
-
-        @Override
-        public boolean onInfo(MediaPlayer mp, int what, int extra) {
-            switch (what) {
-                case MediaPlayer.MEDIA_INFO_BUFFERING_START:
-                    onBuffering(true);
-                    clearProgressMessageHandler();
-                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
-                    break;
-                case MediaPlayer.MEDIA_INFO_BUFFERING_END:
-                    onBuffering(false);
-                    break;
-                case MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START:
-                    eventEmitter.ready();
-                    onBuffering(false);
-                    clearProgressMessageHandler(); // ensure there is no other message
-                    startProgressHandler();
-                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
-                    setHideShutterView(true);
-                    break;
-                default:
-            }
-
-            return false;
-        }
-
-        @Override
-        public void onPrepared(MediaPlayer mp) {
+    private final MediaPlayer.EventListener vlcEventHandler = new MediaPlayer.EventListener() {
+        public void onPrepared() {
             mediaPlayerValid = true;
 
             if (loadVideoStarted) {
                 loadVideoStarted = false;
 
                 try {
-                    MediaPlayer.TrackInfo[] tracks = mediaPlayer.getTrackInfo();
-
                     ArrayList<Track> audioTracks = new ArrayList<>();
                     ArrayList<Track> textTracks = new ArrayList<>();
                     ArrayList<VideoTrack> videoTracks = new ArrayList<>();
 
-                    for (int i = 0; i < tracks.length; ++i) {
-                        MediaPlayer.TrackInfo track = tracks[i];
-                        MediaFormat format = track.getFormat();
-                        int trackType = track.getTrackType();
-                        boolean selected = mediaPlayer.getSelectedTrack(trackType) == i;
+                    int index = 0;
 
-                        switch (trackType) {
-                            case MEDIA_TRACK_TYPE_AUDIO:
-                                Track audioTrack = mediaPlayerTrackToGenericTrack(track, i, selected);
+                    IMedia.Track[] audioList = mediaPlayer.getTracks(IMedia.Track.Type.Audio);
 
-                                if (format != null && !isMediaFormatSupported(format, MEDIA_TRACK_TYPE_AUDIO)) {
-                                    break;
-                                }
-
-                                audioTracks.add(audioTrack);
-
-                                break;
-                            case MEDIA_TRACK_TYPE_SUBTITLE:
-                                Track textTrack = mediaPlayerTrackToGenericTrack(track, i, selected);
-
-                                if (format != null) textTrack.setMimeType(format.getString(KEY_MIME));
-
-                                textTracks.add(textTrack);
-                                break;
-                            case MEDIA_TRACK_TYPE_VIDEO:
-                                VideoTrack videoTrack = mediaPlayerTrackToGenericVideoTrack(format, i, selected);
-
-                                if (format != null && !isMediaFormatSupported(format, MEDIA_TRACK_TYPE_VIDEO)) {
-                                    break;
-                                }
-
-                                videoTracks.add(videoTrack);
-                            default:
-                                break;
+                    if (audioList != null) {
+                        for (IMedia.Track audioTrack : audioList) {
+                            Track track = vlcTrackToGenericTrack(audioTrack, index);
+                            track.setBitrate(audioTrack.bitrate);
+                            audioTracks.add(track);
+                            index++;
                         }
                     }
 
+                    index = 0;
+
+                    IMedia.Track[] textList = mediaPlayer.getTracks(IMedia.Track.Type.Text);
+
+                    if (textList != null) {
+                        for (IMedia.Track textTrack : textList) {
+                            textTracks.add(vlcTrackToGenericTrack(textTrack, index));
+                            index++;
+                        }
+                    }
+
+                    index = 0;
+
+                    IMedia.Track[] videoList = mediaPlayer.getTracks(IMedia.Track.Type.Video);
+
+                    if (videoList != null) {
+                        for (IMedia.Track videoTrack : videoList) {
+                            videoTracks.add(vlcTrackToGenericVideoTrack((IMedia.VideoTrack) videoTrack, index));
+                            index++;
+                        }
+                    }
+
+                    IMedia.VideoTrack selectedVideo = (IMedia.VideoTrack) mediaPlayer.getSelectedTrack(IMedia.Track.Type.Video);
+
                     eventEmitter.load(
-                        mediaPlayer.getDuration(),
-                        mediaPlayer.getCurrentPosition(),
-                        mediaPlayer.getVideoWidth(),
-                        mediaPlayer.getVideoHeight(),
+                        mediaPlayer.getLength(),
+                        mediaPlayer.getTime(),
+                        selectedVideo.width,
+                        selectedVideo.height,
                         audioTracks,
                         textTracks,
                         videoTracks,
-                        String.valueOf(mediaPlayer.getSelectedTrack(MEDIA_TRACK_TYPE_VIDEO))
+                        selectedVideo.id
                     );
 
                     setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
                 } catch (IllegalStateException e) {
-                    eventEmitter.error("MediaPlayer onLoad error.", e);
+                    eventEmitter.error("VLCPlayer onLoad error.", e);
                 }
             }
+        }
+
+        private Track vlcTrackToGenericTrack(IMedia.Track mediaTrack, int index) {
+            Track track = new Track();
+            track.setIndex(index);
+            track.setTitle(mediaTrack.name != null ? mediaTrack.name : mediaTrack.id);
+            track.setSelected(mediaTrack.selected);
+            track.setLanguage(mediaTrack.language);
+
+            return track;
+        }
+
+        private VideoTrack vlcTrackToGenericVideoTrack(IMedia.VideoTrack mediaTrack, int index) {
+            VideoTrack track = new VideoTrack();
+            track.setTrackId(mediaTrack.id);
+            track.setIndex(index);
+            track.setSelected(mediaTrack.selected);
+            track.setWidth(mediaTrack.width);
+            track.setHeight(mediaTrack.height);
+            track.setBitrate(mediaTrack.bitrate);
+            track.setCodecs(mediaTrack.codec);
+
+            return track;
         }
 
         @Override
-        public void onSeekComplete(MediaPlayer mp) {
-            eventEmitter.seek(mp.getCurrentPosition(), mp.getCurrentPosition() % 1000);
-        }
+        public void onEvent(MediaPlayer.Event event) {
+            switch (event.type) {
+                case MediaPlayer.Event.Opening:
+                    loadVideoStarted = true;
+                    eventEmitter.loadStart();
+                    break;
+                case MediaPlayer.Event.Buffering:
+                    float percent = event.getBuffering();
+                    mediaPlayerBuffered = Math.round((double) (mediaPlayer.getLength() * percent) / 100.0);
 
-        private String getErrorMessage(int code) {
-            switch (code) {
-                case MEDIA_ERROR_IO:
-                    return "File or network related operation error";
-                case MEDIA_ERROR_MALFORMED:
-                    return "Bitstream is not conforming to the related coding standard or file spec";
-                case MEDIA_ERROR_UNSUPPORTED:
-                    return "Bitstream is conforming to the related coding standard or file spec, but the media framework does not support the feature";
-                case MEDIA_ERROR_TIMED_OUT:
-                    return "Some operation takes too long to complete, usually more than 3-5 seconds";
+                    if (0 == percent) {
+                        onBuffering(true);
+                        clearProgressMessageHandler();
+                        setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+                        break;
+                    }
+
+                    if (100 == percent) {
+                        onBuffering(false);
+                        break;
+                    }
+
+                    break;
+                case MediaPlayer.Event.EndReached:
+                    updateProgress();
+                    clearProgressMessageHandler();
+                    eventEmitter.end();
+                    onStopPlayback();
+                    setKeepScreenOn(false);
+                    break;
+                case MediaPlayer.Event.Vout:
+                    eventEmitter.ready();
+                    onBuffering(false);
+                    clearProgressMessageHandler(); // ensure there is no other message
+                    startProgressHandler();
+                    setKeepScreenOn(preventsDisplaySleepDuringVideoPlayback);
+                    setHideShutterView(true);
+                    onPrepared();
+                    break;
                 default:
-                    return "Unspecified low-level system error";
+                    break;
             }
         }
-    }
-
-    private boolean isMediaFormatSupported(MediaFormat format, int trackType) {
-        if (MEDIA_TRACK_TYPE_SUBTITLE == trackType) {
-            return true;
-        }
-
-        String mimeType = format.getString(KEY_MIME);
-
-        if (null == mimeType) {
-            // Failed to get mimeType - assume it is supported
-            return true;
-        }
-
-        boolean isSupported;
-        boolean isHardwareSupported = false;
-        boolean isSoftwareSupported = false;
-
-        try {
-            for (MediaCodecInfo codecInfo : MediaCodecUtil.getDecoderInfos(mimeType, false, false)) {
-                if (!codecInfo.mimeType.equals(mimeType)) {
-                    continue;
-                }
-
-                if (MEDIA_TRACK_TYPE_VIDEO == trackType) {
-                    int width = format.getInteger(KEY_WIDTH);
-                    int height = format.getInteger(KEY_HEIGHT);
-                    float frameRate = format.getFloat(KEY_FRAME_RATE);
-
-                    if (width > 0 || height > 0 || frameRate > 0.0) {
-                        if (!codecInfo.isVideoSizeAndRateSupportedV21(width, height, frameRate)) {
-                            continue;
-                        }
-                    }
-                }
-
-                if (MEDIA_TRACK_TYPE_AUDIO == trackType) {
-                    int sampleRate = format.getInteger(KEY_SAMPLE_RATE);
-
-                    if (sampleRate > 0) {
-                        if (!codecInfo.isAudioSampleRateSupportedV21(sampleRate)) {
-                            continue;
-                        }
-                    }
-                }
-
-                if (codecInfo.capabilities.isFormatSupported(format)) {
-                    if (codecInfo.hardwareAccelerated) {
-                        isHardwareSupported = true;
-                    }
-
-                    if (codecInfo.softwareOnly) {
-                        isSoftwareSupported = true;
-                    }
-                }
-            }
-
-            isSupported = isHardwareSupported || isSoftwareSupported;
-        } catch (Exception e) {
-            // Failed to get decoder info - assume it is supported
-            isSupported = true;
-        }
-
-        return isSupported;
-    }
-
-    private Track mediaPlayerTrackToGenericTrack(MediaPlayer.TrackInfo trackInfo, int trackIndex, boolean selected) {
-        Track track = new Track();
-        track.setIndex(trackIndex);
-        track.setSelected(selected);
-        track.setLanguage(trackInfo.getLanguage());
-
-        MediaFormat format = trackInfo.getFormat();
-
-        if (format != null) {
-            track.setMimeType(format.getString(KEY_MIME));
-
-            if (trackInfo.getTrackType() == MEDIA_TRACK_TYPE_AUDIO) {
-                track.setBitrate(format.getInteger(KEY_BIT_RATE));
-            }
-        }
-
-        return track;
-    }
-
-    private VideoTrack mediaPlayerTrackToGenericVideoTrack(MediaFormat format, int trackIndex, boolean selected) {
-        VideoTrack videoTrack = new VideoTrack();
-
-        if (format != null) {
-            videoTrack.setWidth(format.getInteger(KEY_WIDTH));
-            videoTrack.setHeight(format.getInteger(KEY_HEIGHT));
-            videoTrack.setBitrate(format.getInteger(KEY_BIT_RATE));
-        }
-
-        videoTrack.setSelected(selected);
-        videoTrack.setTrackId(String.valueOf(trackIndex));
-        videoTrack.setIndex(trackIndex);
-
-        return videoTrack;
-    }
+    };
 }

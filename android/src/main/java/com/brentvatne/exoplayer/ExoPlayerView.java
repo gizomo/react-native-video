@@ -6,7 +6,7 @@ import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.media3.common.AdViewProvider;
 import androidx.media3.common.C;
-import androidx.media3.common.Format;
+//import androidx.media3.common.Format;
 import androidx.media3.common.Player;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
@@ -15,11 +15,9 @@ import androidx.media3.common.util.Assertions;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.SubtitleView;
 
-import android.media.MediaPlayer;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
@@ -29,6 +27,8 @@ import android.widget.FrameLayout;
 import com.brentvatne.common.api.ResizeMode;
 import com.brentvatne.common.api.SubtitleStyle;
 import com.google.common.collect.ImmutableList;
+
+import org.videolan.libvlc.MediaPlayer;
 
 import java.util.List;
 
@@ -113,21 +113,16 @@ public final class ExoPlayerView extends FrameLayout implements AdViewProvider {
 
     private void setSurface() {
         if (surfaceView instanceof SurfaceView) {
-            SurfaceHolder surfaceHolder = ((SurfaceView) surfaceView).getHolder();
-            surfaceHolder.addCallback(new SurfaceHolder.Callback() {
-                @Override
-                public void surfaceCreated(@NonNull SurfaceHolder surfaceHolder) {
-                    mediaPlayer.setDisplay(surfaceHolder);
+            mediaPlayer.getVLCVout().setVideoView((SurfaceView) surfaceView);
+            mediaPlayer.getVLCVout().attachViews((vlcVout, width, height, visibleWidth, visibleHeight, sarNum, sarDen) -> {
+                boolean isInitialRatio = layout.getAspectRatio() == 0;
+                if (height == 0 || width == 0) {
+                    return;
                 }
+                layout.setAspectRatio((width * 1f) / height);
 
-                @Override
-                public void surfaceChanged(@NonNull SurfaceHolder surfaceHolder, int i, int i1, int i2) {
-
-                }
-
-                @Override
-                public void surfaceDestroyed(@NonNull SurfaceHolder surfaceHolder) {
-
+                if (isInitialRatio) {
+                    post(measureAndLayout);
                 }
             });
         } else {
